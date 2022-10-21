@@ -1,3 +1,28 @@
+## novatel_gps_driver (humble) - 4.1.1-1
+
+The packages in the `novatel_gps_driver` repository were released into the `humble` distro by running `/usr/bin/bloom-release --rosdistro humble --track humble novatel_gps_driver` on `Fri, 21 Oct 2022 19:49:22 -0000`
+
+These packages were released:
+- `novatel_gps_driver`
+- `novatel_gps_msgs`
+
+Version of package(s) in repository `novatel_gps_driver`:
+
+- upstream repository: https://github.com/swri-robotics/novatel_gps_driver.git
+- release repository: https://github.com/ros2-gbp/novatel_gps_driver-release.git
+- rosdistro version: `4.1.0-3`
+- old version: `4.1.0-3`
+- new version: `4.1.1-1`
+
+Versions of tools used:
+
+- bloom version: `0.11.2`
+- catkin_pkg version: `0.5.2`
+- rosdep version: `0.22.1`
+- rosdistro version: `0.9.0`
+- vcstools version: `0.1.42`
+
+
 ## novatel_gps_driver (rolling) - 4.1.0-2
 
 The packages in the `novatel_gps_driver` repository were released into the `rolling` distro by running `/usr/bin/bloom-release --edit --rosdistro rolling --track rolling novatel_gps_driver` on `Mon, 11 Apr 2022 20:32:59 -0000`
