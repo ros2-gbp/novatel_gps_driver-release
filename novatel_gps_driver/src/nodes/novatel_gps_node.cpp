@@ -114,6 +114,7 @@ namespace novatel_gps_driver
     publish_diagnostics_ = this->declare_parameter("publish_diagnostics", publish_diagnostics_);
     publish_sync_diagnostic_ = this->declare_parameter("publish_sync_diagnostic", publish_sync_diagnostic_);
     polling_period_ = this->declare_parameter("polling_period", polling_period_);
+    expected_rate_ = this->declare_parameter("expected_rate", 1.0 / polling_period_);
     reconnect_delay_s_ = this->declare_parameter("reconnect_delay_s", reconnect_delay_s_);
     use_binary_messages_ = this->declare_parameter("use_binary_messages", use_binary_messages_);
     span_frame_to_ros_frame_ = this->declare_parameter("span_frame_to_ros_frame", span_frame_to_ros_frame_);
@@ -557,7 +558,7 @@ namespace novatel_gps_driver
     // If TimeSync messages are available, CalculateTimeSync keeps
     // an acculumator of their offset, which is used to
     // calculate a rolling mean of the offset to apply to all messages
-    rclcpp::Duration sync_offset(0); // If no TimeSyncs, assume 0 offset
+    rclcpp::Duration sync_offset(std::chrono::nanoseconds(0)); // If no TimeSyncs, assume 0 offset
     try
     {
       if (last_sync_ != rclcpp::Time(this->get_clock()->get_clock_type()))
