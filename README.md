@@ -56,15 +56,15 @@ import launch_ros.actions
 
 def generate_launch_description():
     container = launch_ros.actions.ComposableNodeContainer(
-        node_name='novatel_gps_container',
-        node_namespace='',
+        name='novatel_gps_container',
+        namespace='',
         package='rclcpp_components',
-        node_executable='component_container',
+        executable='component_container',
         composable_node_descriptions=[
             launch_ros.descriptions.ComposableNode(
                 package='novatel_gps_driver',
-                node_plugin='novatel_gps_driver::NovatelGpsNode',
-                node_name='novatel_gps',
+                plugin='novatel_gps_driver::NovatelGpsNode',
+                name='novatel_gps',
                 parameters=[{
                     'connection_type': 'serial',
                     'device': '/dev/ttyUSB0',
@@ -128,6 +128,9 @@ Nodelets
             - This will be set as the period for `GPGGA`, `GPRMC`, `GPGSA`, `BESTPOS`, 
             and `BESTVEL` logs.
             - Default: `0.05` (20 Hz)
+        - `expected_rate`: Expected publish rate of GPS messages.
+            - If time between GPS message stamps is greater than 1.5 times the excepted publish rate, diagnostic warning is published.
+            - Default: Based on `polling_period` parameter: `20.0` (20Hz)
         - `publish_clocksteering`: `true` to publish novatel_gps_msgs/ClockSteering messages.
             - Default: `false`
         - `publish_diagnostics`: `true` to publish node diagnostics.
