@@ -326,4 +326,5 @@ tracks:
     ros_distro: rolling
     vcs_type: git
     vcs_uri: https://github.com/swri-robotics/novatel_gps_driver.git
-    version: :{auto}
+    version: 4.1.0
+    version_saved: :{auto}
