@@ -2,6 +2,12 @@
 Changelog for package novatel_gps_msgs
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+4.1.2 (2024-03-18)
+------------------
+
+4.1.1 (2022-10-21)
+------------------
+
 4.1.0 (2020-10-06)
 ------------------
 * Refactor GPSFix generation (ROS2) (`#73 <https://github.com/swri-robotics/novatel_gps_driver/issues/73>`_)
