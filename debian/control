@@ -1,0 +1,12 @@
+Source: ros-jazzy-novatel-gps-driver
+Section: misc
+Priority: optional
+Maintainer: P. J. Reed <preed@swri.org>
+Build-Depends: debhelper (>= 9.0.0), ament-cmake, ament-cmake-googletest <!nocheck>, ament-lint <!nocheck>, libament-index-cpp-dev <!nocheck>, libboost-all-dev, libdiagnostic-msgs-dev, libdiagnostic-updater-dev, libnav-msgs-dev, libpcap0.8-dev, libsensor-msgs-dev, libstd-msgs-dev, libtf2-dev, libtf2-geometry-msgs-dev, python3-diagnostic-msgs, python3-diagnostic-updater, python3-nav-msgs, python3-sensor-msgs, python3-std-msgs, python3-tf2, python3-tf2-geometry-msgs, ros-diagnostic-msgs, ros-jazzy-gps-msgs, ros-jazzy-novatel-gps-msgs, ros-jazzy-rclcpp, ros-jazzy-rclcpp-components, ros-jazzy-swri-math-util, ros-jazzy-swri-roscpp, ros-jazzy-swri-serial-util, ros-nav-msgs, ros-sensor-msgs, ros-std-msgs, ros-jazzy-ros-workspace
+Homepage: 
+Standards-Version: 3.9.2
+
+Package: ros-jazzy-novatel-gps-driver
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, libboost-all-dev, libdiagnostic-msgs-dev, libdiagnostic-updater-dev, libnav-msgs-dev, libpcap0.8-dev, libsensor-msgs-dev, libstd-msgs-dev, libtf2-dev, libtf2-geometry-msgs-dev, python3-diagnostic-msgs, python3-diagnostic-updater, python3-nav-msgs, python3-sensor-msgs, python3-std-msgs, python3-tf2, python3-tf2-geometry-msgs, ros-diagnostic-msgs, ros-jazzy-gps-msgs, ros-jazzy-novatel-gps-msgs, ros-jazzy-rclcpp, ros-jazzy-rclcpp-components, ros-jazzy-swri-math-util, ros-jazzy-swri-roscpp, ros-jazzy-swri-serial-util, ros-nav-msgs, ros-sensor-msgs, ros-std-msgs, ros-jazzy-ros-workspace
+Description: Driver for NovAtel receivers
