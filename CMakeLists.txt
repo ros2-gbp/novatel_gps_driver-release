@@ -60,6 +60,7 @@ add_library(${PROJECT_NAME}
   src/parsers/range.cpp
   src/parsers/time.cpp
   src/parsers/trackstat.cpp
+  src/parsers/rxstatus.cpp
 )
 set_property(TARGET ${PROJECT_NAME}
   PROPERTY POSITION_INDEPENDENT_CODE ON)
