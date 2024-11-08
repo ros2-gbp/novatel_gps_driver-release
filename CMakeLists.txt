@@ -40,6 +40,7 @@ set(MSG_FILES
   msg/Time.msg
   msg/Trackstat.msg
   msg/TrackstatChannel.msg
+  msg/NovatelRxStatus.msg
   srv/NovatelFRESET.srv
 )
 
