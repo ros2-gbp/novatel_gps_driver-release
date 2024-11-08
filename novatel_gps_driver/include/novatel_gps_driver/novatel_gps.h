@@ -81,6 +81,7 @@
 #include <novatel_gps_driver/parsers/psrdop2.h>
 #include <novatel_gps_driver/parsers/time.h>
 #include <novatel_gps_driver/parsers/trackstat.h>
+#include <novatel_gps_driver/parsers/rxstatus.h>
 
 namespace novatel_gps_driver
 {
@@ -275,6 +276,12 @@ namespace novatel_gps_driver
        * @param[out] clocksteering_msgs New CLOCKSTEERING messages.
        */
       void GetClockSteeringMessages(std::vector<novatel_gps_driver::ClockSteeringParser::MessageType>& clocksteering_msgs);
+      /**
+       * @brief Provides any RXSTATUS messages that have been received since the
+       * last time this was called.
+       * @param[out] rxstatus_msgs New RXSTATUS messages.
+       */
+      void GetRxStatusMessages(std::vector<novatel_gps_driver::RxStatusParser::MessageType>& rxstatus_msgs);
 
       /**
        * @return true if we are connected to a NovAtel device, false otherwise.
@@ -504,6 +511,7 @@ namespace novatel_gps_driver
       RangeParser range_parser_;
       TimeParser time_parser_;
       TrackstatParser trackstat_parser_;
+      RxStatusParser rxstatus_parser_;
 
       // Message buffers
       boost::circular_buffer<novatel_gps_driver::ClockSteeringParser::MessageType> clocksteering_msgs_;
@@ -530,6 +538,7 @@ namespace novatel_gps_driver
       boost::circular_buffer<novatel_gps_driver::RangeParser::MessageType> range_msgs_;
       boost::circular_buffer<novatel_gps_driver::TimeParser::MessageType> time_msgs_;
       boost::circular_buffer<novatel_gps_driver::TrackstatParser::MessageType> trackstat_msgs_;
+      boost::circular_buffer<novatel_gps_driver::RxStatusParser::MessageType> rxstatus_msgs_;
 
       novatel_gps_driver::Psrdop2Parser::MessageType latest_psrdop2_;
 
