@@ -220,6 +220,7 @@ namespace novatel_gps_driver
     bool publish_trackstat_;
     bool publish_diagnostics_;
     bool publish_sync_diagnostic_;
+    bool publish_dual_antenna_diagnostic_;
     bool publish_invalid_gpsfix_;
     double reconnect_delay_s_;
     bool use_binary_messages_;
@@ -288,6 +289,11 @@ namespace novatel_gps_driver
     int32_t measurement_count_;
     rclcpp::Time last_published_;
     novatel_gps_msgs::msg::NovatelPosition::SharedPtr last_novatel_position_;
+    // ROS Dual Antenna diagnostics
+    uint32_t aux1stat_;
+    uint32_t aux2stat_;
+    uint32_t aux3stat_;
+    uint32_t aux4stat_;
 
     std::string imu_frame_id_;
     std::string frame_id_;
@@ -326,6 +332,8 @@ namespace novatel_gps_driver
     void DataDiagnostic(diagnostic_updater::DiagnosticStatusWrapper& status);
 
     void RateDiagnostic(diagnostic_updater::DiagnosticStatusWrapper& status);
+
+    void DualAntennaDiagnostic(diagnostic_updater::DiagnosticStatusWrapper& status);
 
     rclcpp::Time NovatelTimeToLocalTime(const TimeParserMsgT & utc_time);
   };
