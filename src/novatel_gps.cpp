@@ -27,6 +27,7 @@
 //
 // *****************************************************************************
 
+#include "novatel_gps_driver/parsers/rxstatus.h"
 #include <iomanip>
 #include <sstream>
 #include <net/ethernet.h>
@@ -86,6 +87,7 @@ namespace novatel_gps_driver
       range_msgs_(MAX_BUFFER_SIZE),
       time_msgs_(MAX_BUFFER_SIZE),
       trackstat_msgs_(MAX_BUFFER_SIZE),
+      rxstatus_msgs_(MAX_BUFFER_SIZE),
       imu_rate_(-1.0),
       apply_vehicle_body_rotation_(false)
   {
@@ -530,6 +532,11 @@ namespace novatel_gps_driver
   void NovatelGps::GetClockSteeringMessages(std::vector<novatel_gps_driver::ClockSteeringParser::MessageType>& clocksteering_msgs)
   {
     DrainQueue(clocksteering_msgs_, clocksteering_msgs);
+  }
+
+  void NovatelGps::GetRxStatusMessages(std::vector<novatel_gps_driver::RxStatusParser::MessageType>& rxstatus_msgs)
+  {
+    DrainQueue(rxstatus_msgs_, rxstatus_msgs);
   }
 
   bool NovatelGps::CreatePcapConnection(const std::string& device, NovatelMessageOpts const& opts)
@@ -1139,6 +1146,13 @@ namespace novatel_gps_driver
         trackstat_msgs_.push_back(std::move(trackstat));
         break;
       }
+      case RxStatusParser::MESSAGE_ID:
+      {
+        auto rxstatus = rxstatus_parser_.ParseBinary(msg);
+        rxstatus->header.stamp = stamp;
+        rxstatus_msgs_.push_back(std::move(rxstatus));
+        break;
+      }
       default:
         RCLCPP_WARN(node_.get_logger(), "Unexpected binary message id: %u", msg.header_.message_id_);
         break;
@@ -1319,6 +1333,12 @@ namespace novatel_gps_driver
       auto trackstat = trackstat_parser_.ParseAscii(sentence);
       trackstat->header.stamp = stamp;
       trackstat_msgs_.push_back(std::move(trackstat));
+    }
+    else if (sentence.id == "RXSTATUSA")
+    {
+      auto rxstatus = rxstatus_parser_.ParseAscii(sentence);
+      rxstatus->header.stamp = stamp;
+      rxstatus_msgs_.push_back(std::move(rxstatus));
     }
     else if (sentence.id == "RAWIMUXA")
     {
