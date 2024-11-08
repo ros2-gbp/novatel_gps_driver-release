@@ -27,6 +27,7 @@
 //
 // *****************************************************************************
 
+#include "novatel_gps_driver/parsers/rxstatus.h"
 #include <novatel_gps_driver/nodes/novatel_gps_node.h>
 
 #include <swri_math_util/math_util.h>
@@ -70,6 +71,7 @@ namespace novatel_gps_driver
       publish_trackstat_(false),
       publish_diagnostics_(true),
       publish_sync_diagnostic_(true),
+      publish_dual_antenna_diagnostic_(publish_novatel_dual_antenna_heading_),
       publish_invalid_gpsfix_(false),
       reconnect_delay_s_(0.5),
       use_binary_messages_(false),
@@ -86,6 +88,10 @@ namespace novatel_gps_driver
       gps_insufficient_data_warnings_(0),
       publish_rate_warnings_(0),
       measurement_count_(0),
+      aux1stat_(-1),
+      aux2stat_(-1),
+      aux3stat_(-1),
+      aux4stat_(-1),
       last_published_(get_clock()->get_clock_type()),
       imu_frame_id_(""),
       frame_id_("")
@@ -118,6 +124,7 @@ namespace novatel_gps_driver
     publish_trackstat_ = this->declare_parameter("publish_trackstat", publish_trackstat_);
     publish_diagnostics_ = this->declare_parameter("publish_diagnostics", publish_diagnostics_);
     publish_sync_diagnostic_ = this->declare_parameter("publish_sync_diagnostic", publish_sync_diagnostic_);
+    publish_dual_antenna_diagnostic_ = this->declare_parameter("publish_dual_antenna_diagnostic", publish_dual_antenna_diagnostic_);
     polling_period_ = this->declare_parameter("polling_period", polling_period_);
     expected_rate_ = this->declare_parameter("expected_rate", 1.0 / polling_period_);
     reconnect_delay_s_ = this->declare_parameter("reconnect_delay_s", reconnect_delay_s_);
@@ -275,6 +282,13 @@ namespace novatel_gps_driver
                                 this,
                                 &NovatelGpsNode::SyncDiagnostic);
       }
+
+      if (publish_dual_antenna_diagnostic_)
+      {
+        diagnostic_updater_.add("Dual Antenna",
+                                this,
+                                &NovatelGpsNode::DualAntennaDiagnostic);
+      }
     }
 
 
@@ -385,6 +399,10 @@ namespace novatel_gps_driver
     if (publish_trackstat_)
     {
       opts["trackstat" + format_suffix] = 1.0;  // Trackstat
+    }
+    if (publish_dual_antenna_diagnostic_ && publish_diagnostics_)
+    {
+      opts["rxstatus" + format_suffix] = 1.0;
     }
     // Set the serial baud rate if needed
     if (connection_ == NovatelGps::SERIAL)
@@ -777,6 +795,18 @@ namespace novatel_gps_driver
         trackstat_pub_->publish(std::move(msg));
       }
     }
+    if (publish_dual_antenna_diagnostic_)
+    {
+      std::vector<novatel_gps_driver::RxStatusParser::MessageType> rxstatus_msgs;
+      gps_.GetRxStatusMessages(rxstatus_msgs);
+      for (auto& msg : rxstatus_msgs)
+      {
+          aux1stat_ = msg->aux1stat;
+          aux2stat_ = msg->aux2stat;
+          aux3stat_ = msg->aux3stat;
+          aux4stat_ = msg->aux4stat;
+      }
+    }
     if (publish_imu_messages_)
     {
       std::vector<novatel_gps_driver::CorrImuDataParser::MessageType> novatel_imu_msgs;
@@ -1166,6 +1196,28 @@ namespace novatel_gps_driver
     status.add("Warnings", publish_rate_warnings_);
 
     publish_rate_warnings_ = 0;
+  }
+
+  void NovatelGpsNode::DualAntennaDiagnostic(diagnostic_updater::DiagnosticStatusWrapper& status)
+  {
+    bool powered = aux2stat_ & 0x10000000;
+    bool open = aux2stat_ & 0x20000000;
+    bool shorted = aux2stat_ & 0x40000000;
+
+    if (open || shorted)
+    {
+      status.summary(diagnostic_msgs::msg::DiagnosticStatus::ERROR, "Second Antenna Connection Error");
+    }
+    else 
+    {
+      status.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, "Nominal");
+    }
+
+    status.add("Second Antenna Not Powered", powered ? "false" : "true");
+    status.add("Second Antenna Open", aux2stat_ & 0x20000000 ? "true" : "false");
+    status.add("Second Antenna Shorted", aux2stat_ & 0x40000000 ? "true" : "false");
+
+    status.add("aux2stat", aux2stat_);
   }
 
   rclcpp::Time NovatelGpsNode::NovatelTimeToLocalTime(const TimeParserMsgT & time_msg)
