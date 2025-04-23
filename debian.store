@@ -1,1 +1,1 @@
-{"base": "bd4d09c", "parent": "debian/rolling/novatel_gps_msgs", "previous": "a527310", "trim": "", "trimbase": ""}
+{"base": "d359fc91bdb0", "parent": "debian/kilted/novatel_gps_msgs", "previous": "36689b091e1b", "trim": "", "trimbase": ""}
