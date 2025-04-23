@@ -1,0 +1,12 @@
+Source: ros-kilted-novatel-gps-driver
+Section: misc
+Priority: optional
+Maintainer: P. J. Reed <preed@swri.org>
+Build-Depends: debhelper (>= 9.0.0), libboost-all-dev, libpcap0.8-dev, ros-kilted-ament-cmake, ros-kilted-ament-cmake-gtest <!nocheck>, ros-kilted-ament-index-cpp <!nocheck>, ros-kilted-ament-lint-auto <!nocheck>, ros-kilted-diagnostic-msgs, ros-kilted-diagnostic-updater, ros-kilted-gps-msgs, ros-kilted-nav-msgs, ros-kilted-novatel-gps-msgs, ros-kilted-rclcpp, ros-kilted-rclcpp-components, ros-kilted-sensor-msgs, ros-kilted-std-msgs, ros-kilted-swri-math-util, ros-kilted-swri-roscpp, ros-kilted-swri-serial-util, ros-kilted-tf2, ros-kilted-tf2-geometry-msgs, ros-kilted-ros-workspace
+Homepage: 
+Standards-Version: 3.9.2
+
+Package: ros-kilted-novatel-gps-driver
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, libboost-all-dev, libpcap0.8-dev, ros-kilted-diagnostic-msgs, ros-kilted-diagnostic-updater, ros-kilted-gps-msgs, ros-kilted-nav-msgs, ros-kilted-novatel-gps-msgs, ros-kilted-rclcpp, ros-kilted-rclcpp-components, ros-kilted-sensor-msgs, ros-kilted-std-msgs, ros-kilted-swri-math-util, ros-kilted-swri-roscpp, ros-kilted-swri-serial-util, ros-kilted-tf2, ros-kilted-tf2-geometry-msgs, ros-kilted-ros-workspace
+Description: Driver for NovAtel receivers
