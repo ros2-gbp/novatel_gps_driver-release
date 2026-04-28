@@ -52,12 +52,10 @@ namespace novatel_gps_driver
     const std::string GetMessageName() const override;
 
     MessageType ParseBinary(const BinaryMessage& bin_msg) noexcept(false) override;
-    MessageType ParseShortBinary(const BinaryMessage& bin_msg) noexcept(false);
 
     MessageType ParseAscii(const NovatelSentence& sentence) noexcept(false) override;
 
     static constexpr uint32_t BINARY_HEADER_LENGTH = 28;
-    static constexpr uint32_t BINARY_SHORT_HEADER_LENGTH = 12;
   };
 }
 
