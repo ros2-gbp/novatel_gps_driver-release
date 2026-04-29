@@ -1,0 +1,12 @@
+Source: ros-lyrical-novatel-gps-driver
+Section: misc
+Priority: optional
+Maintainer: P. J. Reed <preed@swri.org>
+Build-Depends: debhelper (>= 9.0.0), libboost-all-dev, libpcap0.8-dev, ros-lyrical-ament-cmake, ros-lyrical-ament-cmake-gtest <!nocheck>, ros-lyrical-ament-index-cpp <!nocheck>, ros-lyrical-ament-lint-auto <!nocheck>, ros-lyrical-diagnostic-msgs, ros-lyrical-diagnostic-updater, ros-lyrical-gps-msgs, ros-lyrical-nav-msgs, ros-lyrical-novatel-gps-msgs, ros-lyrical-rclcpp, ros-lyrical-rclcpp-components, ros-lyrical-sensor-msgs, ros-lyrical-std-msgs, ros-lyrical-swri-math-util, ros-lyrical-swri-roscpp, ros-lyrical-swri-serial-util, ros-lyrical-tf2, ros-lyrical-tf2-geometry-msgs, ros-lyrical-ros-workspace
+Homepage: https://index.ros.org/p/novatel_gps_driver/#lyrical
+Standards-Version: 3.9.2
+
+Package: ros-lyrical-novatel-gps-driver
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, libboost-all-dev, libpcap0.8-dev, ros-lyrical-diagnostic-msgs, ros-lyrical-diagnostic-updater, ros-lyrical-gps-msgs, ros-lyrical-nav-msgs, ros-lyrical-novatel-gps-msgs, ros-lyrical-rclcpp, ros-lyrical-rclcpp-components, ros-lyrical-sensor-msgs, ros-lyrical-std-msgs, ros-lyrical-swri-math-util, ros-lyrical-swri-roscpp, ros-lyrical-swri-serial-util, ros-lyrical-tf2, ros-lyrical-tf2-geometry-msgs, ros-lyrical-ros-workspace
+Description: Driver for NovAtel receivers
