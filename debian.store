@@ -1,1 +1,1 @@
-{"base": "1fe339ead93c", "parent": "debian/rolling/novatel_gps_driver", "previous": "684a04478b5b", "trim": "", "trimbase": ""}
+{"base": "26177d4", "parent": "debian/lyrical/novatel_gps_driver", "previous": "f51475d", "trim": "", "trimbase": ""}
