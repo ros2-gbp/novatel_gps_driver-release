@@ -2,6 +2,16 @@
 Changelog for package novatel_gps_msgs
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+4.2.1 (2025-04-24)
+------------------
+* Added support for `CORRIMUS` and `INSPVAS`, also replaying PCAP in loop. (`#125 <https://github.com/swri-robotics/novatel_gps_driver/issues/125>`_)
+  * corrimus and inspvas added
+  * loop replay for pcap
+  ---------
+  Co-authored-by: Abhishek_khoyani <abhishek.khoyani@hexagon.com>
+  Co-authored-by: David Anthony <djanthony@gmail.com>
+* Contributors: Abhishek Khoyani
+
 4.2.0 (2024-11-08)
 ------------------
 * Add dual antenna diagnostics (`#124 <https://github.com/swri-robotics/novatel_gps_driver/issues/124>`_)
