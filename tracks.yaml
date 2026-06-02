@@ -404,8 +404,8 @@ tracks:
     patches: null
     release_inc: '5'
     release_repo_url: null
-    release_tag: 4.2.0
+    release_tag: 4.2.1
     ros_distro: rolling
     vcs_type: git
     vcs_uri: https://github.com/swri-robotics/novatel_gps_driver.git
-    version: 4.2.0
+    version: 4.2.1
