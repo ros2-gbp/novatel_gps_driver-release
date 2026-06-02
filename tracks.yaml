@@ -326,11 +326,11 @@ tracks:
     patches: null
     release_inc: '6'
     release_repo_url: null
-    release_tag: 4.2.0
+    release_tag: 4.2.1
     ros_distro: lyrical
     vcs_type: git
     vcs_uri: https://github.com/swri-robotics/novatel_gps_driver.git
-    version: 4.2.0
+    version: 4.2.1
   melodic:
     actions:
     - bloom-export-upstream :{vcs_local_uri} :{vcs_type} --tag :{release_tag} --display-uri
