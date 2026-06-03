@@ -2,6 +2,24 @@
 Changelog for package novatel_oem628
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+4.3.0 (2026-06-03)
+------------------
+* Updating for Lyrical (`#130 <https://github.com/swri-robotics/novatel_gps_driver/issues/130>`_)
+  * Updating CMakeList for new ament functionality
+  * Updating boost usage for new versions of boost
+  * Using standard library threads instead of boost threads.
+* Contributors: David Anthony
+
+4.2.1 (2025-04-24)
+------------------
+* Added support for `CORRIMUS` and `INSPVAS`, also replaying PCAP in loop. (`#125 <https://github.com/swri-robotics/novatel_gps_driver/issues/125>`_)
+  * corrimus and inspvas added
+  * loop replay for pcap
+  ---------
+  Co-authored-by: Abhishek_khoyani <abhishek.khoyani@hexagon.com>
+  Co-authored-by: David Anthony <djanthony@gmail.com>
+* Contributors: Abhishek Khoyani
+
 4.2.0 (2024-11-08)
 ------------------
 * Add dual antenna diagnostics (`#124 <https://github.com/swri-robotics/novatel_gps_driver/issues/124>`_)
