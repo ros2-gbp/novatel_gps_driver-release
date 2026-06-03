@@ -248,17 +248,19 @@ tracks:
       :{release_inc} --os-name fedora
     - git-bloom-generate -y rosrpm --prefix release/:{ros_distro} :{ros_distro} -i
       :{release_inc} --os-name rhel
+    - git-bloom-generate -y rosdynrpm --prefix release/:{ros_distro} :{ros_distro}
+      -i :{release_inc} --require-os fedora rhel
     devel_branch: ros2-devel
     last_version: 4.2.0
     name: upstream
     patches: null
     release_inc: '5'
     release_repo_url: null
-    release_tag: 4.2.0
+    release_tag: 4.3.0
     ros_distro: kilted
     vcs_type: git
     vcs_uri: https://github.com/swri-robotics/novatel_gps_driver.git
-    version: 4.2.0
+    version: 4.3.0
   kinetic:
     actions:
     - bloom-export-upstream :{vcs_local_uri} :{vcs_type} --tag :{release_tag} --display-uri
