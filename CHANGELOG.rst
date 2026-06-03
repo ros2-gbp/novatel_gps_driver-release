@@ -2,6 +2,9 @@
 Changelog for package novatel_gps_msgs
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+4.3.0 (2026-06-03)
+------------------
+
 4.2.1 (2025-04-24)
 ------------------
 * Added support for `CORRIMUS` and `INSPVAS`, also replaying PCAP in loop. (`#125 <https://github.com/swri-robotics/novatel_gps_driver/issues/125>`_)
