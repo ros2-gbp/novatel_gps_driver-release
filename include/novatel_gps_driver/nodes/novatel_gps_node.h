@@ -36,21 +36,17 @@
  *
  * <b>Topics Subscribed:</b>
  *
- * \e gps_sync <tt>std_msgs/Time<tt> - Timestamped sync pulses
+ * \e rtcm <tt>rtcm_msgs/Message</tt> - RTCM corrections to send to the receiver
+ *    (only subscribed to if correction_device is set)
+ * \e gps_sync <tt>builtin_interfaces/Time</tt> - Timestamped sync pulses
  *    from a DIO module (optional). These are used to improve the accuracy of
  *    the time stamps of the messages published.
  *
  * <b>Topics Published:</b>
  *
- * \e gps <tt>gps_msgs/GPSFix</tt> - GPS data for navigation
- * \e corrimudata <tt>novatel_gps_message/NovatelCorrectedImuData</tt> - Raw
- *    Novatel IMU data. (only published if `publish_imu_messages` is set `true`)
- * \e gppga <tt>novatel_gps_driver/Gpgga</tt> - Raw GPGGA data for debugging (only
- *    published if `publish_nmea_messages` is set `true`)
- * \e gpgsa <tt>novatel_gps_msgs/Gpgsa</tt> - Raw GPGSA data for debugging (only
- *    published if `publish_gpgsa` is set `true`)
- * \e gprmc <tt>novatel_gps_msgs/Gprmc</tt> - Raw GPRMC data for debugging (only
- *    published if `publish_nmea_messages` is set `true`)
+ * \e gps <tt>gps_msgs/GPSFix</tt> - GPS data for navigation. Always published.
+ * \e fix <tt>sensor_msgs/NavSatFix</tt> - GPSFix messages converted to NavSatFix.
+ *    Always published.
  * \e bestpos <tt>novatel_gps_msgs/NovatelPosition</tt> - High fidelity Novatel-
  *    specific position and receiver status data. (only published if
  *    `publish_novatel_positions` is set `true`)
@@ -60,14 +56,60 @@
  * \e bestvel <tt>novatel_gps_msgs/NovatelVelocity</tt> - High fidelity Novatel-
  *    specific velocity and receiver status data. (only published if
  *    `publish_novatel_velocity` is set `true`)
- * \e psrdop2 <tt>novatel_gps_msgs/Psrdop2</tt> - Pseudorange Dilution of Precision
+ * \e bestxyz <tt>novatel_gps_msgs/NovatelXYZ</tt> - High fidelity Novatel-specific
+ *    position in ECEF coordinates. (only published if
+ *    `publish_novatel_xyz_positions` is set `true`)
+ * \e clocksteering <tt>novatel_gps_msgs/ClockSteering</tt> - Novatel clock steering
+ *    status. (only published if `publish_clocksteering` is set `true`)
+ * \e corrimudata <tt>novatel_gps_msgs/NovatelCorrectedImuData</tt> - Raw
+ *    Novatel IMU data. (only published if `publish_imu_messages` is set `true`)
+ * \e diagnostics <tt>diagnostic_msgs/DiagnosticArray</tt> - Node diagnostics.
+ *    (only published if `publish_diagnostics` is set `true`)
+ * \e dual_antenna_heading <tt>novatel_gps_msgs/NovatelDualAntennaHeading</tt> -
+ *    Heading derived from a dual antenna setup. (only published if
+ *    `publish_novatel_dual_antenna_heading` is set `true`)
+ * \e gpgga <tt>novatel_gps_msgs/Gpgga</tt> - Raw GPGGA data for debugging (only
+ *    published if `publish_nmea_messages` is set `true`)
+ * \e gpgsa <tt>novatel_gps_msgs/Gpgsa</tt> - Raw GPGSA data for debugging (only
+ *    published if `publish_gpgsa` is set `true`)
+ * \e gpgsv <tt>novatel_gps_msgs/Gpgsv</tt> - Satellites in view. (only published
+ *    if `publish_gpgsv` is set `true`)
+ * \e gphdt <tt>novatel_gps_msgs/Gphdt</tt> - Raw GPHDT heading data. (only
+ *    published if `publish_gphdt` is set `true`)
+ * \e gprmc <tt>novatel_gps_msgs/Gprmc</tt> - Raw GPRMC data for debugging (only
+ *    published if `publish_nmea_messages` is set `true`)
+ * \e nmea_sentence <tt>nmea_msgs/Sentence</tt> - Every NMEA sentence the receiver
+ *    sends, republished as it arrived. (only published if
+ *    `publish_nmea_sentences` is set `true`)
+ * \e heading2 <tt>novatel_gps_msgs/NovatelHeading2</tt> - Heading derived from a
+ *    second antenna. (only published if `publish_novatel_heading2` is set `true`)
+ * \e imu <tt>sensor_msgs/Imu</tt> - CORRIMUDATA logs converted to Imu messages.
+ *    (only published if `publish_imu_messages` is set `true`)
+ * \e inscov <tt>novatel_gps_msgs/Inscov</tt> - INS covariance data. (only
+ *    published if `publish_imu_messages` is set `true`)
+ * \e inspva <tt>novatel_gps_msgs/Inspva</tt> - INS position, velocity and
+ *    attitude. (only published if `publish_imu_messages` is set `true`)
+ * \e inspvax <tt>novatel_gps_msgs/Inspvax2</tt> - Extended INS position, velocity
+ *    and attitude. (only published if `publish_imu_messages` is set `true`)
+ * \e insstdev <tt>novatel_gps_msgs/Insstdev2</tt> - INS standard deviations. (only
+ *    published if `publish_imu_messages` is set `true`)
+ * \e insupdatestatus <tt>novatel_gps_msgs/NovatelInsUpdateStatus</tt> - Which
+ *    updates, including the wheel sensor, the INS filter used at its last update.
+ *    (only published if `publish_novatel_insupdatestatus` is set `true`)
+ * \e psrdop2 <tt>novatel_gps_msgs/NovatelPsrdop2</tt> - Pseudorange Dilution of Precision
  *    measurements. (only published if `publish_novatel_psrdop2` is set `true`)
  * \e range <tt>novatel_gps_msgs/Range</tt> - Satellite ranging information
  *    (only published if `publish_range_messages` is set `true`)
- * \e time <tt>novatel_gps_msgs/Time</tt> - Novatel-specific time data. (Only
- *    published if `publish_time` is set `true`.)
+ * \e rawdmi <tt>novatel_gps_msgs/NovatelRawDmi</tt> - Raw wheel sensor input.
+ *    (only published if `publish_novatel_rawdmi` is set `true`)
+ * \e rawimux <tt>novatel_gps_msgs/NovatelRawImu</tt> - Raw IMU data, in counts, at
+ *    the IMU's full rate, e.g. for post-processing. (only published if
+ *    `publish_rawimux` is set `true`)
+ * \e time <tt>novatel_gps_msgs/NovatelTime</tt> - Novatel-specific time data.
+ *    (Only published if `publish_time_messages` is set `true`.) On Lyrical and
+ *    older this message is named <tt>novatel_gps_msgs/Time</tt> instead.
  * \e time_reference <tt>sensor_msgs/TimeReference</tt> - Generic time reference
- *    messages for time syncrhonization. (Only published if `publish_time_reference`
+ *    messages for time synchronization. (Only published if `publish_time_reference`
  *    is set `true`.)
  * \e trackstat <tt>novatel_gps_msgs/Trackstat</tt> - Novatel-specific trackstat
  *    data at 1 Hz. (Only published if `publish_trackstat` is set `true`.)
@@ -80,40 +122,130 @@
  *
  * <b>Parameters:</b>
  *
- * \e connection_type <tt>str</tt> - "serial", "udp", or "tcp" as appropriate
- *    for the Novatel device connected. ["serial"]
+ * \e connection_type <tt>str</tt> - "serial", "udp", "tcp", or "pcap" as
+ *    appropriate for the Novatel device connected. ["serial"]
+ * \e correction_connection_type <tt>str</tt> - "serial", "udp" or "tcp" for the
+ *    correction port. [the value of connection_type]
+ * \e correction_device <tt>str</tt> - The device RTCM corrections received on the
+ *    rtcm topic are written to: a serial device, or a "host:port" for TCP and UDP.
+ *    The port has to be set to INTERFACEMODE ... RTCMV3, which stops it accepting
+ *    NovAtel commands, so this is normally not the port the driver reads logs
+ *    from.  Set it to the same string as device to send corrections over the
+ *    driver's own connection, which needs INTERFACEMODE ... AUTO.  Empty means
+ *    corrections are not sent and the rtcm topic is not subscribed to. [""]
+ * \e correction_reconnect_delay_s <tt>dbl</tt> - How long to wait, in seconds,
+ *    between attempts to open a correction port that could not be opened. A value
+ *    that isn't positive is ignored. [5.0]
+ * \e correction_serial_baud <tt>int</tt> - The baud rate of a serial correction
+ *    port. [the value of serial_baud]
+ * \e configure_commands <tt>str[]</tt> - Receiver commands to send on connect,
+ *    one command per entry and no line endings, for configuration the driver has
+ *    no parameter of its own for; e.g. ["CONNECTIMU COM3 HG1700_AG58",
+ *    "SETIMUORIENTATION 5"]. They are sent after the driver's own configuration
+ *    commands and before it requests any logs, and are re-sent on every
+ *    reconnect. A command that can't be sent safely is dropped with a warning.
+ *    [[]]
  * \e device <tt>str</tt> - The path to the device, e.g. /dev/ttyUSB0 for
  *    serial connections or "192.168.1.10:3001" for IP.
  *    [""]
+ * \e dmi_source <tt>str</tt> - Where the receiver gets wheel sensor data, sent via
+ *    DMICONFIG on connect: "EXT_COUNT" or "EXT_VELOCITY" (cumulative or
+ *    incremental ticks sent to the receiver in RAWDMI commands), "IMU" (a sensor
+ *    wired to a NovAtel IMU), "ENCLOSURE" (a sensor wired to a PwrPak7 or CPT7),
+ *    or "DISABLE" to turn wheel sensor input off. Empty means don't send it,
+ *    leaving the receiver's existing configuration in place. Requires OEM7
+ *    firmware 7.07 or newer. [""]
+ * \e expected_rate <tt>dbl</tt> - Expected publish rate, in Hz, used by the
+ *    rate diagnostic.  A value that isn't positive is ignored. [1.0 / polling_period]
  * \e frame_id <tt>str</tt> - The TF frame ID to set in all published message
  *    headers. [""]
+ * \e gpsfix_sync_tol <tt>dbl</tt> - Maximum difference, in seconds, between the
+ *    timestamps of a BESTPOS and a BESTVEL log for them to be treated as
+ *    synchronized when building a gps_msgs/GPSFix. [0.01]
+ * \e imu_frame_id <tt>str</tt> - The TF frame ID to set in published IMU message
+ *    headers. [""]
  * \e imu_rate <tt>dbl</tt> - Rate at which to publish sensor_msgs/Imu messages.
- *    [100.0]
+ *    Should be the IMU's sample rate, or that divided by a whole number. [100.0]
  * \e imu_sample_rate <tt>dbl</tt> - Rate at which the device internally samples
- *    its IMU. [200.0]
+ *    its IMU. Negative means detect it from the IMU type. [-1.0]
+ * \e ins_rotation_rbv <tt>dbl[]</tt> - The [x, y, z] Euler angle rotation, in
+ *    degrees, from the IMU body frame to the vehicle frame, sent to the receiver
+ *    via "SETINSROTATION RBV" on connect. Empty means don't send it, leaving
+ *    the receiver's existing configuration (if any) in place. Must be empty or
+ *    exactly 3 elements. []
+ * \e ins_rotation_rbv_stdev <tt>dbl[]</tt> - The [x, y, z] standard deviation of
+ *    ins_rotation_rbv, in degrees. May be left empty even when ins_rotation_rbv
+ *    is set, to use the receiver's default uncertainty. Must be empty or
+ *    exactly 3 elements. []
+ * \e ins_translation_ant1_offset <tt>dbl[]</tt> - The [x, y, z] lever arm, in
+ *    meters, from the IMU to the primary GNSS antenna, in the IMU body frame,
+ *    sent to the receiver via SETINSTRANSLATION on connect. Empty means don't
+ *    send it. Must be empty or exactly 3 elements. []
+ * \e ins_translation_ant1_offset_stdev <tt>dbl[]</tt> - The [x, y, z] standard
+ *    deviation of ins_translation_ant1_offset, in meters. May be left empty
+ *    even when ins_translation_ant1_offset is set. Must be empty or exactly 3
+ *    elements. []
+ * \e ins_translation_ant2_offset <tt>dbl[]</tt> - Like ins_translation_ant1_offset,
+ *    but for the secondary antenna on a dual-antenna receiver. []
+ * \e ins_translation_ant2_offset_stdev <tt>dbl[]</tt> - Like
+ *    ins_translation_ant1_offset_stdev, but for ins_translation_ant2_offset. []
+ * \e loop <tt>bool</tt> - Replay the PCAP file in a loop. Only effective when
+ *    `connection_type` is "pcap". [false]
  * \e polling_period <tt>dbl</tt> - The number of seconds in between messages
- *    requested from the GPS. (Does not affect time messages) [0.05]
- * \e publish_diagnostics <tt>bool</tt> - If set true, the driver publishes
- *    ROS diagnostics [true]
+ *    requested from the GPS. (Does not affect time messages)  A value that isn't
+ *    positive is ignored. [0.05]
  * \e publish_clocksteering <tt>bool</tt> - If set to true, the driver publishes
  *    Novatel ClockSteering messages [false]
- * \e publish_imu_messages <tt>boot</tt> - If set true, the driver publishes
- *    Novatel CorrImuData, InsPva, InsPvax, InsStdev, and sensor_msgs/Imu messages [false]
+ * \e publish_diagnostics <tt>bool</tt> - If set true, the driver publishes
+ *    ROS diagnostics [true]
+ * \e publish_dual_antenna_diagnostic <tt>bool</tt> - If true, publish diagnostics
+ *    for the second antenna. This is ignored if publish_diagnostics is false.
+ *    [same as publish_novatel_dual_antenna_heading]
  * \e publish_gpgsa <tt>bool</tt> - If set true, the driver requests GPGSA
- *    messages from the device at 20 Hz and publishes them on `gpgsa`
+ *    messages from the device at 20 Hz and publishes them on `gpgsa` [false]
+ * \e publish_gpgsv <tt>bool</tt> - If set true, the driver requests GPGSV
+ *    messages from the device and publishes them on `gpgsv` [false]
+ * \e publish_gphdt <tt>bool</tt> - If set true, the driver requests GPHDT
+ *    messages from the device and publishes them on `gphdt` [false]
+ * \e publish_imu_messages <tt>bool</tt> - If set true, the driver publishes
+ *    Novatel CorrImuData, Inscov, Inspva, Inspvax, Insstdev, and sensor_msgs/Imu
+ *    messages [false]
+ * \e publish_invalid_gpsfix <tt>bool</tt> - If set true, publish gps_msgs/GPSFix
+ *    messages even when the fix status is STATUS_NO_FIX [false]
  * \e publish_nmea_messages <tt>bool</tt> - If set true, the driver publishes
  *    GPGGA and GPRMC messages (see Topics Published) [false]
- * \e publish_novatel_messages <tt>bool</tt> - If set true, the driver
+ * \e publish_nmea_sentences <tt>bool</tt> - If set true, the driver publishes
+ *    every NMEA sentence it receives as nmea_msgs/Sentence, unparsed (see Topics
+ *    Published).  Which sentences the receiver sends is controlled by the
+ *    publish_gpgsa, publish_gpgsv, publish_gphdt and publish_nmea_messages
+ *    parameters. [false]
+ * \e publish_novatel_dual_antenna_heading <tt>bool</tt> - If set true, the driver
+ *    publishes Novatel DUALANTENNAHEADING messages (see Topics Published) [false]
+ * \e publish_novatel_heading2 <tt>bool</tt> - If set true, the driver publishes
+ *    Novatel HEADING2 messages (see Topics Published) [false]
+ * \e publish_novatel_insupdatestatus <tt>bool</tt> - If set true, the driver
+ *    publishes Novatel INSUPDATESTATUS messages (see Topics Published) [false]
+ * \e publish_novatel_positions <tt>bool</tt> - If set true, the driver
  *    publishes Novatel Bestpos messages (see Topics Published); even if
  *    this is false, these logs will still be requested from the receiver [false]
  * \e publish_novatel_psrdop2 <tt>bool</tt> - If set true, the driver
- *    published Novatel PSRDOP2 messages (see Topics Published); data from this
- *    message will be used to filled in DoP values in gps_msgs/GPSFix messages.
- *    Note that this topic is only published when the values changesages [false]
+ *    publishes Novatel PSRDOP2 messages (see Topics Published); data from this
+ *    message will be used to fill in DoP values in gps_msgs/GPSFix messages.
+ *    Note that this topic is only published when the values change [false]
+ * \e publish_novatel_rawdmi <tt>bool</tt> - If set true, the driver publishes
+ *    Novatel RAWDMI wheel sensor messages (see Topics Published) [false]
+ * \e publish_novatel_utm_positions <tt>bool</tt> - If set true, the driver
+ *    publishes Novatel BESTUTM messages (see Topics Published) [false]
  * \e publish_novatel_velocity <tt>bool</tt> - If set true, the driver
  *    publishes Novatel Bestvel messages (see Topics Published); data from
  *    these messages will be used to fill in track/speed fields in
  *    gps_msgs/GPSFix messages [true]
+ * \e publish_novatel_xyz_positions <tt>bool</tt> - If set true, the driver
+ *    publishes Novatel BESTXYZ messages (see Topics Published) [false]
+ * \e publish_rawimux <tt>bool</tt> - If set true, the driver requests RAWIMUX
+ *    logs at the IMU's full rate and publishes them (see Topics Published). This
+ *    is a lot of data: over a serial link, it needs a faster baud rate than the
+ *    default. [false]
  * \e publish_range_messages <tt>bool</tt> - If set true, the driver
  *    publishes Novatel RANGE messages [false]
  * \e publish_sync_diagnostic <tt>bool</tt> - If true, publish a Sync diagnostic.
@@ -124,17 +256,23 @@
  *    sensor_msgs/msg/TimeReference messages (see Topics Published) [false]
  * \e publish_trackstat <tt>bool</tt> - If set true, the driver publishes
  *    Novatel Trackstat messages (see Topics Published) [false]
- * \e reconnect_delay_s <tt>bool</t> - If the driver is disconnected from the
+ * \e publish_wheel_sensor_diagnostic <tt>bool</tt> - If true, publish a
+ *    diagnostic reporting whether the INS is using the wheel sensor. This is
+ *    ignored if publish_diagnostics is false. [true if dmi_source enables the
+ *    wheel sensor, false otherwise]
+ * \e reconnect_delay_s <tt>dbl</tt> - If the driver is disconnected from the
  *    device, how long (in seconds) to wait between reconnect attempts. [0.5]
+ * \e serial_baud <tt>int</tt> - Baud rate to use for a serial connection.
+ *    [115200]
+ * \e span_frame_to_ros_frame <tt>bool</tt> - Deprecated and ignored; setting
+ *    it logs a warning.  sensor_msgs/Imu is always published in the ROS body
+ *    frame, converted from the SPAN frame by the driver. [false]
  * \e use_binary_messages <tt>bool</tt> - If set true, the driver requests
  *    binary NovAtel messages from the device; if false, it requests ASCII
  *    messages.  [false]
  * \e wait_for_sync <tt>bool</tt> - Wait for both BESTPOS and BESTVEL
  *    logs to arrive before pushing GPSFixes.  This has no effect if
  *    publish_novatel_velocity is false.  [true]
- * \e span_frame_to_ros_frame <tt>bool</tt> - Translate the SPAN coordinate
- *    frame to a ROS coordinate frame using the VEHICLEBODYROTATION and
- *    APPLYVEHICLEBODYROTATION commands. [false]
  */
 
 #ifndef NOVATEL_GPS_DRIVER_NOVATEL_GPS_NODE_H
@@ -154,6 +292,9 @@
 
 #include <novatel_gps_msgs/msg/clock_steering.hpp>
 #include <novatel_gps_msgs/srv/novatel_freset.hpp>
+
+#include <nmea_msgs/msg/sentence.hpp>
+#include <rtcm_msgs/msg/message.hpp>
 
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <sensor_msgs/msg/time_reference.hpp>
@@ -179,6 +320,19 @@ namespace novatel_gps_driver
     void SyncCallback(const builtin_interfaces::msg::Time::ConstSharedPtr& sync);
 
     /**
+     * @brief Sends a received RTCM correction message to the receiver.
+     * https://github.com/swri-robotics/novatel_gps_driver/issues/97
+     */
+    void RtcmCallback(const rtcm_msgs::msg::Message::ConstSharedPtr& rtcm);
+
+    /**
+     * @brief Opens the port RTCM corrections are written to, if one is configured,
+     * is not already open, and hasn't been tried in the last
+     * correction_reconnect_delay_s seconds.
+     */
+    void ConnectCorrectionPort();
+
+    /**
      * Main spin loop connects to device, then reads data from it and publishes
      * messages.
      */
@@ -192,6 +346,14 @@ namespace novatel_gps_driver
     std::string connection_type_;
     /// The baud rate used for serial connection
     int32_t serial_baud_;
+    /// The device RTCM corrections are written to; empty to not send any
+    std::string correction_device_;
+    /// The correction port's connection type, ("serial", "tcp", or "udp")
+    std::string correction_connection_type_;
+    /// The baud rate used for a serial correction port
+    int32_t correction_serial_baud_;
+    /// How long to wait between attempts to open a correction port that isn't there
+    double correction_reconnect_delay_s_;
     double polling_period_;
     bool publish_gpgsa_;
     bool publish_gpgsv_;
@@ -210,7 +372,11 @@ namespace novatel_gps_driver
     bool publish_novatel_heading2_;
     bool publish_novatel_dual_antenna_heading_;
     bool publish_novatel_psrdop2_;
+    bool publish_novatel_rawdmi_;
+    bool publish_novatel_insupdatestatus_;
+    bool publish_rawimux_;
     bool publish_nmea_messages_;
+    bool publish_nmea_sentences_;
     bool publish_range_messages_;
     bool publish_time_messages_;
     bool publish_time_reference_;
@@ -218,6 +384,7 @@ namespace novatel_gps_driver
     bool publish_diagnostics_;
     bool publish_sync_diagnostic_;
     bool publish_dual_antenna_diagnostic_;
+    bool publish_wheel_sensor_diagnostic_;
     bool publish_invalid_gpsfix_;
     double reconnect_delay_s_;
     bool use_binary_messages_;
@@ -228,8 +395,8 @@ namespace novatel_gps_driver
     rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;
     rclcpp::Publisher<novatel_gps_msgs::msg::Inscov>::SharedPtr inscov_pub_;
     rclcpp::Publisher<novatel_gps_msgs::msg::Inspva>::SharedPtr inspva_pub_;
-    rclcpp::Publisher<novatel_gps_msgs::msg::Inspvax>::SharedPtr inspvax_pub_;
-    rclcpp::Publisher<novatel_gps_msgs::msg::Insstdev>::SharedPtr insstdev_pub_;
+    rclcpp::Publisher<novatel_gps_msgs::msg::Inspvax2>::SharedPtr inspvax_pub_;
+    rclcpp::Publisher<novatel_gps_msgs::msg::Insstdev2>::SharedPtr insstdev_pub_;
     rclcpp::Publisher<novatel_gps_msgs::msg::NovatelCorrectedImuData>::SharedPtr novatel_imu_pub_;
     rclcpp::Publisher<novatel_gps_msgs::msg::NovatelPosition>::SharedPtr novatel_position_pub_;
     rclcpp::Publisher<novatel_gps_msgs::msg::NovatelXYZ>::SharedPtr novatel_xyz_position_pub_;
@@ -238,19 +405,32 @@ namespace novatel_gps_driver
     rclcpp::Publisher<novatel_gps_msgs::msg::NovatelHeading2>::SharedPtr novatel_heading2_pub_;
     rclcpp::Publisher<novatel_gps_msgs::msg::NovatelDualAntennaHeading>::SharedPtr novatel_dual_antenna_heading_pub_;
     rclcpp::Publisher<novatel_gps_msgs::msg::NovatelPsrdop2>::SharedPtr novatel_psrdop2_pub_;
+    rclcpp::Publisher<novatel_gps_msgs::msg::NovatelRawDmi>::SharedPtr novatel_rawdmi_pub_;
+    rclcpp::Publisher<novatel_gps_msgs::msg::NovatelInsUpdateStatus>::SharedPtr novatel_insupdatestatus_pub_;
+    rclcpp::Publisher<novatel_gps_msgs::msg::NovatelRawImu>::SharedPtr rawimux_pub_;
     rclcpp::Publisher<novatel_gps_msgs::msg::Gpgga>::SharedPtr gpgga_pub_;
     rclcpp::Publisher<novatel_gps_msgs::msg::Gpgsv>::SharedPtr gpgsv_pub_;
     rclcpp::Publisher<novatel_gps_msgs::msg::Gpgsa>::SharedPtr gpgsa_pub_;
     rclcpp::Publisher<novatel_gps_msgs::msg::Gphdt>::SharedPtr gphdt_pub_;
     rclcpp::Publisher<novatel_gps_msgs::msg::Gprmc>::SharedPtr gprmc_pub_;
+    rclcpp::Publisher<nmea_msgs::msg::Sentence>::SharedPtr nmea_sentence_pub_;
     rclcpp::Publisher<novatel_gps_msgs::msg::Range>::SharedPtr range_pub_;
+#if NOVATEL_GPS_DRIVER_HAS_NOVATEL_TIME_MSG
+    rclcpp::Publisher<novatel_gps_msgs::msg::NovatelTime>::SharedPtr time_pub_;
+#else
     rclcpp::Publisher<novatel_gps_msgs::msg::Time>::SharedPtr time_pub_;
+#endif
     rclcpp::Publisher<sensor_msgs::msg::TimeReference>::SharedPtr time_ref_pub_;
     rclcpp::Publisher<novatel_gps_msgs::msg::Trackstat>::SharedPtr trackstat_pub_;
 
     rclcpp::Service<novatel_gps_msgs::srv::NovatelFRESET>::SharedPtr reset_service_;
 
     NovatelGps::ConnectionType connection_;
+    NovatelGps::ConnectionType correction_connection_;
+    /// When the last attempt to open the correction port was made
+    std::chrono::steady_clock::time_point last_correction_attempt_;
+    /// Whether the current run of correction port failures has been logged already
+    bool correction_error_logged_;
     NovatelGps gps_;
 
     std::thread thread_;
@@ -258,6 +438,7 @@ namespace novatel_gps_driver
 
     /// Subscriber to listen for sync times from a DIO
     rclcpp::Subscription<builtin_interfaces::msg::Time>::SharedPtr sync_sub_;
+    rclcpp::Subscription<rtcm_msgs::msg::Message>::SharedPtr rtcm_sub_;
     rclcpp::Time last_sync_;
     /// Buffer of sync message time stamps
     boost::circular_buffer<rclcpp::Time> sync_times_;
@@ -291,6 +472,9 @@ namespace novatel_gps_driver
     uint32_t aux2stat_;
     uint32_t aux3stat_;
     uint32_t aux4stat_;
+    // ROS wheel sensor diagnostics; the DMI update status from the latest
+    // INSUPDATESTATUS log, or empty if none has arrived. Guarded by mutex_.
+    std::string dmi_update_status_;
 
     std::string imu_frame_id_;
     std::string frame_id_;
@@ -332,6 +516,8 @@ namespace novatel_gps_driver
     void RateDiagnostic(diagnostic_updater::DiagnosticStatusWrapper& status);
 
     void DualAntennaDiagnostic(diagnostic_updater::DiagnosticStatusWrapper& status);
+
+    void WheelSensorDiagnostic(diagnostic_updater::DiagnosticStatusWrapper& status);
 
     rclcpp::Time NovatelTimeToLocalTime(const TimeParserMsgT & utc_time);
   };
