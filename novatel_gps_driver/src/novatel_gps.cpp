@@ -28,7 +28,11 @@
 // *****************************************************************************
 
 #include "novatel_gps_driver/parsers/rxstatus.h"
+#include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <net/ethernet.h>
 #include <netinet/udp.h>
@@ -48,6 +52,7 @@ namespace novatel_gps_driver
 {
   NovatelGps::NovatelGps(rclcpp::Node& node) :
       gpsfix_sync_tol_(0.01),
+      gpsfix_sync_timeout_(1.0),
       wait_for_sync_(true),
       node_(node),
       connection_(SERIAL),
@@ -61,6 +66,7 @@ namespace novatel_gps_driver
       clocksteering_msgs_(MAX_BUFFER_SIZE),
       corrimudata_msgs_(MAX_BUFFER_SIZE),
       corrimus_msgs_(MAX_BUFFER_SIZE),
+      nmea_sentences_(MAX_BUFFER_SIZE),
       gpgga_msgs_(MAX_BUFFER_SIZE),
       gpgsa_msgs_(MAX_BUFFER_SIZE),
       gpgsv_msgs_(MAX_BUFFER_SIZE),
@@ -85,14 +91,24 @@ namespace novatel_gps_driver
       time_msgs_(MAX_BUFFER_SIZE),
       trackstat_msgs_(MAX_BUFFER_SIZE),
       rxstatus_msgs_(MAX_BUFFER_SIZE),
+      rawdmi_msgs_(MAX_BUFFER_SIZE),
+      insupdatestatus_msgs_(MAX_BUFFER_SIZE),
+      rawimux_msgs_(MAX_BUFFER_SIZE),
       imu_rate_(-1.0),
-      apply_vehicle_body_rotation_(false)
+      imu_log_period_(-1.0),
+      last_corrimu_gap_(-1.0),
+      last_imu_type_(-1),
+      imu_type_requested_(false),
+      correction_connection_(INVALID),
+      correction_shares_connection_(false),
+      correction_tcp_socket_(io_service_)
   {
   }
 
   NovatelGps::~NovatelGps()
   {
     Disconnect();
+    DisconnectCorrectionPort();
   }
 
   bool NovatelGps::Connect(
@@ -193,11 +209,110 @@ namespace novatel_gps_driver
 
   void NovatelGps::ApplyVehicleBodyRotation(const bool& apply_rotation)
   {
-    apply_vehicle_body_rotation_ = apply_rotation;
+    if (apply_rotation)
+    {
+      RCLCPP_WARN(node_.get_logger(),
+                  "span_frame_to_ros_frame is deprecated and is now ignored.  The driver converts "
+                  "IMU data from the SPAN frame to the ROS frame itself, so the receiver no longer "
+                  "needs to be asked to do it.  APPLYVEHICLEBODYROTATION could never do the whole "
+                  "job anyway: it rotates only the INSPVA, INSPVAS, INSPVAX, INSATT, INSATTS and "
+                  "INSATTX logs, leaving CORRIMUDATA in the SPAN frame.");
+    }
+  }
+
+  void NovatelGps::SetInsTranslationAnt1(const std::vector<double>& offset,
+                                         const std::vector<double>& offset_stdev)
+  {
+    if (!offset.empty() && offset.size() != 3)
+    {
+      RCLCPP_ERROR(node_.get_logger(), "ins_translation_ant1_offset must have exactly 3 elements, got %zu; ignoring.",
+                   offset.size());
+      return;
+    }
+    if (!offset_stdev.empty() && offset_stdev.size() != 3)
+    {
+      RCLCPP_ERROR(node_.get_logger(),
+                   "ins_translation_ant1_offset_stdev must have exactly 3 elements, got %zu; ignoring.",
+                   offset_stdev.size());
+      return;
+    }
+    ins_translation_ant1_command_ = BuildInsTranslationCommand("ANT1", offset, offset_stdev);
+  }
+
+  void NovatelGps::SetInsTranslationAnt2(const std::vector<double>& offset,
+                                         const std::vector<double>& offset_stdev)
+  {
+    if (!offset.empty() && offset.size() != 3)
+    {
+      RCLCPP_ERROR(node_.get_logger(), "ins_translation_ant2_offset must have exactly 3 elements, got %zu; ignoring.",
+                   offset.size());
+      return;
+    }
+    if (!offset_stdev.empty() && offset_stdev.size() != 3)
+    {
+      RCLCPP_ERROR(node_.get_logger(),
+                   "ins_translation_ant2_offset_stdev must have exactly 3 elements, got %zu; ignoring.",
+                   offset_stdev.size());
+      return;
+    }
+    ins_translation_ant2_command_ = BuildInsTranslationCommand("ANT2", offset, offset_stdev);
+  }
+
+  void NovatelGps::SetInsRotationRbv(const std::vector<double>& rotation,
+                                     const std::vector<double>& rotation_stdev)
+  {
+    if (!rotation.empty() && rotation.size() != 3)
+    {
+      RCLCPP_ERROR(node_.get_logger(), "ins_rotation_rbv must have exactly 3 elements, got %zu; ignoring.",
+                   rotation.size());
+      return;
+    }
+    if (!rotation_stdev.empty() && rotation_stdev.size() != 3)
+    {
+      RCLCPP_ERROR(node_.get_logger(), "ins_rotation_rbv_stdev must have exactly 3 elements, got %zu; ignoring.",
+                   rotation_stdev.size());
+      return;
+    }
+    ins_rotation_rbv_command_ = BuildInsRotationCommand(rotation, rotation_stdev);
+  }
+
+  bool NovatelGps::SetDmiSource(const std::string& source)
+  {
+    std::string command = BuildDmiConfigCommand(source);
+    if (!source.empty() && command.empty())
+    {
+      RCLCPP_ERROR(node_.get_logger(),
+                   "dmi_source must be EXT_COUNT, EXT_VELOCITY, IMU, ENCLOSURE, or DISABLE, got \"%s\"; ignoring.",
+                   source.c_str());
+      dmi_config_command_.clear();
+      return false;
+    }
+    dmi_config_command_ = command;
+    return true;
+  }
+
+  void NovatelGps::SetConfigureCommands(const std::vector<std::string>& commands)
+  {
+    configure_commands_.clear();
+    for (const auto& command : commands)
+    {
+      std::string warning;
+      std::string built = BuildConfigureCommand(command, warning);
+      if (!warning.empty())
+      {
+        RCLCPP_WARN(node_.get_logger(), "%s", warning.c_str());
+      }
+      if (!built.empty())
+      {
+        configure_commands_.push_back(built);
+      }
+    }
   }
 
   NovatelGps::ReadResult NovatelGps::ProcessData()
   {
+    RequestImuTypeIfDue();
+
     NovatelGps::ReadResult read_result = ReadData();
 
     if (read_result != READ_SUCCESS)
@@ -245,6 +360,13 @@ namespace novatel_gps_driver
 
     for(const auto& sentence : nmea_sentences)
     {
+      // Buffer every sentence before parsing it, so that the types the driver has
+      // no parser for are still republished.
+      auto raw_sentence = std::make_unique<nmea_msgs::msg::Sentence>();
+      raw_sentence->header.stamp = stamp;
+      raw_sentence->sentence = sentence.raw;
+      nmea_sentences_.push_back(std::move(raw_sentence));
+
       try
       {
         NovatelGps::ReadResult result = ParseNmeaSentence(sentence, stamp, most_recent_utc_time);
@@ -336,7 +458,10 @@ namespace novatel_gps_driver
 
       auto gpsFix = std::make_unique<gps_msgs::msg::GPSFix>();
 
-      // Speed & Track are filled in from BESTVEL logs, if available
+      // Speed & Track are filled in from BESTVEL logs, if available.  Otherwise
+      // they're NaN, so they can't be mistaken for a stationary receiver.
+      gpsFix->speed = std::numeric_limits<double>::quiet_NaN();
+      gpsFix->track = std::numeric_limits<double>::quiet_NaN();
       while (!bestvel_sync_buffer_.empty())
       {
         auto& bestvel = bestvel_sync_buffer_.front();
@@ -366,11 +491,40 @@ namespace novatel_gps_driver
 
       if (!synced && wait_for_sync_)
       {
-        // TODO Handle this properly if bestvel is disabled
         // If we have a bestpos and are configured to wait for a sync, we need
-        // to wait until a bestvel arrives.
+        // to wait until a bestvel arrives, but not forever, or a BESTVEL that
+        // lags too far behind stops GPSFix output entirely.  Give up and publish
+        // without speed & track if any of these are true:
+        //  - A newer BESTVEL has already arrived.  The loop above only leaves
+        //    one in the buffer if it's too new, so the matching one was dropped
+        //    or never logged.
+        //  - This BESTPOS is more than gpsfix_sync_timeout_ older than the
+        //    newest one.
+        //  - The sync buffer is full, so the next BESTPOS would silently
+        //    discard this one.
+        // https://github.com/swri-robotics/novatel_gps_driver/issues/2
+        bool bestvel_passed = !bestvel_sync_buffer_.empty();
+        bool timed_out = bestpos_sync_buffer_.back()->novatel_msg_header.gps_seconds -
+                         bestpos->novatel_msg_header.gps_seconds > gpsfix_sync_timeout_;
+        if (!bestvel_passed && !timed_out && !bestpos_sync_buffer_.full())
+        {
+          break;
+        }
+      }
 
-        break;
+      // BESTVEL's track_ground is derived from Doppler/carrier-phase velocity and
+      // gets noisy as ground speed approaches zero. INSPVAX's azimuth is the SPAN
+      // filter's true direction of travel and doesn't have that problem, so prefer
+      // it over track_ground once the INS solution is valid.
+      //
+      // HEADING2 and DUALANTENNAHEADING are deliberately not used here even though
+      // they're also heading sources: they report the antenna baseline's physical
+      // orientation, not direction of travel. Those coincide for a vehicle driving
+      // straight forward, but not on a boat or aircraft that can move sideways or
+      // slip, so using them for track would silently be wrong on those platforms.
+      if (latest_inspvax_ && latest_inspvax_->ins_status == "INS_SOLUTION_GOOD")
+      {
+        gpsFix->track = latest_inspvax_->azimuth;
       }
 
       gpsFix->header.stamp = node_.get_clock()->now();
@@ -467,6 +621,11 @@ namespace novatel_gps_driver
     psrdop2_msgs_.clear();
   }
 
+  void NovatelGps::GetNmeaSentences(std::vector<nmea_msgs::msg::Sentence::UniquePtr>& nmea_sentences)
+  {
+    DrainQueue(nmea_sentences_, nmea_sentences);
+  }
+
   void NovatelGps::GetGpggaMessages(std::vector<novatel_gps_driver::GpggaParser::MessageType>& gpgga_messages)
   {
     DrainQueue(gpgga_msgs_, gpgga_messages);
@@ -546,7 +705,201 @@ namespace novatel_gps_driver
     DrainQueue(rxstatus_msgs_, rxstatus_msgs);
   }
 
-  bool NovatelGps::CreatePcapConnection(const std::string& device, NovatelMessageOpts const& opts)
+  void NovatelGps::GetRawDmiMessages(std::vector<novatel_gps_driver::RawDmiParser::MessageType>& rawdmi_msgs)
+  {
+    DrainQueue(rawdmi_msgs_, rawdmi_msgs);
+  }
+
+  void NovatelGps::GetRawImuxMessages(std::vector<novatel_gps_driver::RawImuxParser::MessageType>& rawimux_msgs)
+  {
+    DrainQueue(rawimux_msgs_, rawimux_msgs);
+  }
+
+  void NovatelGps::GetInsUpdateStatusMessages(
+      std::vector<novatel_gps_driver::InsUpdateStatusParser::MessageType>& insupdatestatus_msgs)
+  {
+    DrainQueue(insupdatestatus_msgs_, insupdatestatus_msgs);
+  }
+
+  bool NovatelGps::ConnectCorrectionPort(const std::string& device, ConnectionType connection,
+                                         int32_t serial_baud)
+  {
+    DisconnectCorrectionPort();
+
+    if (connection == SERIAL)
+    {
+      swri_serial_util::SerialConfig config;
+      config.baud = serial_baud;
+      config.parity = swri_serial_util::SerialConfig::NO_PARITY;
+      config.flow_control = false;
+      config.data_bits = 8;
+      config.stop_bits = 1;
+      config.low_latency_mode = false;
+      config.writable = true;
+
+      std::lock_guard<std::mutex> lock(correction_mutex_);
+      if (!correction_serial_.Open(device, config))
+      {
+        error_msg_ = correction_serial_.ErrorMsg();
+        return false;
+      }
+      correction_connection_ = SERIAL;
+      return true;
+    }
+
+    if (connection == TCP || connection == UDP)
+    {
+      std::lock_guard<std::mutex> lock(correction_mutex_);
+      if (!CreateCorrectionIpConnection(device, connection))
+      {
+        return false;
+      }
+      correction_connection_ = connection;
+      return true;
+    }
+
+    error_msg_ = "A correction port has to be a serial, TCP or UDP connection.";
+    return false;
+  }
+
+  bool NovatelGps::CreateCorrectionIpConnection(const std::string& endpoint, ConnectionType connection)
+  {
+    // Corrections are always sent to a receiver that is listening, so unlike the
+    // driver's own connection this one is never a server.
+    size_t sep_pos = endpoint.find(':');
+    if (sep_pos == std::string::npos || sep_pos == 0 || sep_pos == endpoint.size() - 1)
+    {
+      error_msg_ = "A correction port on TCP or UDP needs both a host and a port, "
+                   "e.g. \"192.168.1.10:3003\", but it was given \"" + endpoint + "\".";
+      return false;
+    }
+    std::string ip = endpoint.substr(0, sep_pos);
+    std::string port = endpoint.substr(sep_pos + 1);
+
+    try
+    {
+      if (connection == TCP)
+      {
+        boost::asio::ip::tcp::resolver resolver(io_service_);
+        boost::asio::connect(correction_tcp_socket_, resolver.resolve(ip, port));
+        RCLCPP_INFO(node_.get_logger(), "Sending corrections via TCP to %s:%s", ip.c_str(), port.c_str());
+      }
+      else
+      {
+        boost::asio::ip::udp::resolver resolver(io_service_);
+        auto endpoints = resolver.resolve(ip, port);
+        if (endpoints.begin() == endpoints.end())
+        {
+          error_msg_ = "Unable to resolve the correction endpoint " + ip + ":" + port;
+          return false;
+        }
+        correction_udp_endpoint_ = std::make_shared<boost::asio::ip::udp::endpoint>(*endpoints.begin());
+        correction_udp_socket_.reset(new boost::asio::ip::udp::socket(io_service_));
+        correction_udp_socket_->open(boost::asio::ip::udp::v4());
+        RCLCPP_INFO(node_.get_logger(), "Sending corrections via UDP to %s:%s", ip.c_str(), port.c_str());
+      }
+    }
+    catch (std::exception& e)
+    {
+      error_msg_ = e.what();
+      return false;
+    }
+
+    return true;
+  }
+
+  void NovatelGps::UseConnectionForCorrections()
+  {
+    DisconnectCorrectionPort();
+    std::lock_guard<std::mutex> lock(correction_mutex_);
+    correction_shares_connection_ = true;
+  }
+
+  bool NovatelGps::IsCorrectionPortConnected() const
+  {
+    return correction_shares_connection_ || correction_connection_ != INVALID;
+  }
+
+  void NovatelGps::DisconnectCorrectionPort()
+  {
+    std::lock_guard<std::mutex> lock(correction_mutex_);
+    boost::system::error_code error;
+    switch (correction_connection_)
+    {
+      case SERIAL:
+        correction_serial_.Close();
+        break;
+      case TCP:
+        correction_tcp_socket_.close(error);
+        break;
+      case UDP:
+        if (correction_udp_socket_)
+        {
+          correction_udp_socket_->close(error);
+          correction_udp_socket_.reset();
+        }
+        correction_udp_endpoint_.reset();
+        break;
+      default:
+        break;
+    }
+    correction_connection_ = INVALID;
+    correction_shares_connection_ = false;
+  }
+
+  bool NovatelGps::WriteCorrections(const std::vector<uint8_t>& data)
+  {
+    if (data.empty())
+    {
+      return true;
+    }
+    if (correction_shares_connection_)
+    {
+      return Write(std::string(data.begin(), data.end()));
+    }
+
+    bool written = false;
+    {
+      std::lock_guard<std::mutex> lock(correction_mutex_);
+      boost::system::error_code error;
+      switch (correction_connection_)
+      {
+        case SERIAL:
+          written = correction_serial_.Write(data) == static_cast<int32_t>(data.size());
+          if (!written)
+          {
+            error_msg_ = correction_serial_.ErrorMsg();
+          }
+          break;
+        case TCP:
+          written = boost::asio::write(correction_tcp_socket_, boost::asio::buffer(data), error) ==
+                    data.size() && !error;
+          break;
+        case UDP:
+          written = correction_udp_socket_->send_to(boost::asio::buffer(data), *correction_udp_endpoint_,
+                                                    0, error) == data.size() && !error;
+          break;
+        default:
+          error_msg_ = "No correction port is open.";
+          return false;
+      }
+      if (error)
+      {
+        error_msg_ = error.message();
+      }
+    }
+
+    if (!written)
+    {
+      RCLCPP_ERROR(node_.get_logger(), "Failed to send corrections: %s", error_msg_.c_str());
+      // Stop writing to a port that isn't working; the driver reopens it when it
+      // reconnects to the receiver.
+      DisconnectCorrectionPort();
+    }
+    return written;
+  }
+
+  bool NovatelGps::CreatePcapConnection(const std::string& device, NovatelMessageOpts const& /* opts */)
   {
     RCLCPP_INFO(node_.get_logger(), "Opening pcap file: %s", device.c_str());
 
@@ -910,29 +1263,93 @@ namespace novatel_gps_driver
     imu_msgs_.clear();
   }
 
-  void NovatelGps::GenerateImuMessages()
+  void NovatelGps::QueueCorrImuIncrement(std::queue<CorrImuIncrement>& queue,
+                                         const CorrImuDataParser::MessageType& imu,
+                                         const std::string& log_name)
   {
-    if (imu_rate_ <= 0.0)
+    // Seconds from one log to another.  Subtracting weeks and seconds separately
+    // keeps the precision that converting each to seconds since the GPS epoch,
+    // around 1e9, would lose.
+    auto SecondsBetween = [](const CorrImuDataParser::MessageType& earlier,
+                             const CorrImuDataParser::MessageType& later)
     {
-      RCLCPP_WARN_ONCE(node_.get_logger(), "IMU rate has not been configured; cannot produce sensor_msgs/Imu messages.");
+      double weeks = static_cast<double>(later->gps_week_num) - static_cast<double>(earlier->gps_week_num);
+      return weeks * SECONDS_PER_WEEK + (later->gps_seconds - earlier->gps_seconds);
+    };
+
+    double gap = last_corrimu_ ? SecondsBetween(last_corrimu_, imu) : -1.0;
+    double previous_gap = last_corrimu_gap_;
+    last_corrimu_ = imu;
+    last_corrimu_gap_ = gap;
+
+    // The receiver accumulates IMU samples over each logging interval, so an
+    // interval that caught no sample is all zeros.  Real data never is, since the
+    // vertical acceleration includes gravity.  The next log that holds data covers
+    // this interval too, so this one can just be skipped.
+    // https://github.com/swri-robotics/novatel_gps_driver/issues/28
+    if (imu->pitch_rate == 0.0 && imu->roll_rate == 0.0 && imu->yaw_rate == 0.0 &&
+        imu->lateral_acceleration == 0.0 && imu->longitudinal_acceleration == 0.0 &&
+        imu->vertical_acceleration == 0.0)
+    {
+      RCLCPP_DEBUG(node_.get_logger(), "%s at %f holds no IMU data; skipping it.",
+                   log_name.c_str(), imu->gps_seconds);
       return;
     }
 
-    if (!latest_insstdev_ && !latest_inscov_)
+    // Log times are whole milliseconds, so rounding to microseconds only removes
+    // floating point error.
+    double interval = last_nonempty_corrimu_ ?
+        std::round(SecondsBetween(last_nonempty_corrimu_, imu) * 1e6) / 1e6 : -1.0;
+    last_nonempty_corrimu_ = imu;
+
+    // If the gap since the last log is well over the one before it, a log was lost,
+    // and this one's increments cover less time than has passed since the last.
+    bool log_lost = gap > 0.0 && previous_gap > 0.0 && gap > 1.5 * previous_gap;
+    if (interval <= 0.0 || log_lost)
+    {
+      RCLCPP_DEBUG(node_.get_logger(), "Can't tell how much time %s at %f covers; skipping it.",
+                   log_name.c_str(), imu->gps_seconds);
+      return;
+    }
+
+    queue.push({imu, interval});
+    if (queue.size() > MAX_BUFFER_SIZE)
     {
       // TODO pjr Make this a _THROTTLE log when it's available
-      // If we haven't received an INSSTDEV or an INSCOV message, don't do anything, just return.
-      RCLCPP_WARN(node_.get_logger(), "No INSSTDEV or INSCOV data yet; orientation covariance will be unavailable.");
+      RCLCPP_WARN(node_.get_logger(), "%s queue overflow.", log_name.c_str());
+      queue.pop();
+    }
+  }
+
+  void NovatelGps::GenerateImuMessages()
+  {
+    if (!latest_insstdev_ && !latest_inscov_)
+    {
+      // A receiver logs neither INSSTDEV nor INSCOV until its INS has aligned, and
+      // this is reached once per CORRIMUDATA and once per INSPVA -- hundreds of
+      // times a second -- so throttle it rather than flooding the log while the
+      // alignment we are waiting on completes.
+      RCLCPP_WARN_THROTTLE(node_.get_logger(), *node_.get_clock(), 5000,
+                           "No INSSTDEV or INSCOV data yet; orientation covariance will be unavailable.");
     }
 
     size_t previous_size = imu_msgs_.size();
     // Only do anything if we have both CORRIMUDATA and INSPVA messages.
     while ((!corrimudata_queue_.empty() || !corrimus_queue_.empty()) && (!inspva_queue_.empty() || !inspvas_queue_.empty()))
     {
-      
-      const auto& corrimudata = !corrimudata_queue_.empty() ? corrimudata_queue_.front() : corrimus_queue_.front();
-      const auto& inspva = !inspva_queue_.empty() ? inspva_queue_.front() : inspvas_queue_.front();
-      
+      // A receiver may be logging either CORRIMUDATA or CORRIMUS, and either INSPVA
+      // or INSPVAS, so pair up whichever variant we actually have. Only the queues
+      // selected here may be popped below; popping an empty queue is undefined
+      // behavior.
+      auto& corrimudata_queue = !corrimudata_queue_.empty() ? corrimudata_queue_ : corrimus_queue_;
+      auto& inspva_queue = !inspva_queue_.empty() ? inspva_queue_ : inspvas_queue_;
+
+      // These are copies rather than references because the messages are used after
+      // they have been popped off of their queues.
+      const auto increment = corrimudata_queue.front();
+      const auto& corrimudata = increment.data;
+      const auto inspva = inspva_queue.front();
+
       double corrimudata_time = corrimudata->gps_week_num * SECONDS_PER_WEEK + corrimudata->gps_seconds;
       double inspva_time = inspva->novatel_msg_header.gps_week_num *
                                SECONDS_PER_WEEK + inspva->novatel_msg_header.gps_seconds;
@@ -944,42 +1361,57 @@ namespace novatel_gps_driver
         if (corrimudata_time < inspva_time)
         {
           RCLCPP_DEBUG(node_.get_logger(), "Discarding oldest CORRIMUDATA.");
-          corrimudata_queue_.pop();
+          corrimudata_queue.pop();
           continue;
         }
         else
         {
           RCLCPP_DEBUG(node_.get_logger(), "Discarding oldest INSPVA.");
-          inspva_queue_.pop();
+          inspva_queue.pop();
           continue;
         }
       }
       // If we've successfully matched up two messages, remove them from their queues.
-      inspva_queue_.pop();
-      inspvas_queue_.pop();
-      corrimudata_queue_.pop();
-      corrimus_queue_.pop();
+      inspva_queue.pop();
+      corrimudata_queue.pop();
 
       // Now we can combine them together to make an Imu message.
       auto imu = std::make_shared<sensor_msgs::msg::Imu>();
 
       imu->header.stamp = corrimudata->header.stamp;
 
+      // INSPVA reports attitude as the rotation from the SPAN local level frame to
+      // the vehicle frame.  The local level frame is ENU, which is what ROS uses,
+      // but azimuth is a left-handed angle measured clockwise from North while ROS
+      // yaw is right-handed and measured counter-clockwise from East, and it tracks
+      // the vehicle frame's y axis, which points right of the ROS body frame's x.
+      // Both differences are the same quarter turn about z, so yaw = 90 - azimuth.
+      //
+      double yaw_degrees = 90.0 - inspva->azimuth;
+
       tf2::Quaternion q;
       q.setRPY(inspva->roll * DEGREES_TO_RADIANS,
                -(inspva->pitch) * DEGREES_TO_RADIANS,
-               -(inspva->azimuth) * DEGREES_TO_RADIANS);
+               yaw_degrees * DEGREES_TO_RADIANS);
       imu->orientation = tf2::toMsg(q);
 
+      // NovAtel reports attitude uncertainty in degrees, about the roll, pitch and
+      // azimuth axes in that order; sensor_msgs/Imu wants variances in rad^2.
       if (latest_inscov_)
       {
-        imu->orientation_covariance = latest_inscov_->attitude_covariance;
+        constexpr double DEGREES2_TO_RADIANS2 = DEGREES_TO_RADIANS * DEGREES_TO_RADIANS;
+        for (size_t i = 0; i < imu->orientation_covariance.size(); i++)
+        {
+          imu->orientation_covariance[i] = latest_inscov_->attitude_covariance[i] * DEGREES2_TO_RADIANS2;
+        }
       }
       else if (latest_insstdev_)
       {
-        imu->orientation_covariance[0] = std::pow(2, latest_insstdev_->pitch_dev);
-        imu->orientation_covariance[4] = std::pow(2, latest_insstdev_->roll_dev);
-        imu->orientation_covariance[8] = std::pow(2, latest_insstdev_->azimuth_dev);
+        // INSSTDEV carries standard deviations, so these have to be squared to
+        // become the variances the covariance matrix is made of.
+        imu->orientation_covariance[0] = std::pow(latest_insstdev_->roll_dev * DEGREES_TO_RADIANS, 2);
+        imu->orientation_covariance[4] = std::pow(latest_insstdev_->pitch_dev * DEGREES_TO_RADIANS, 2);
+        imu->orientation_covariance[8] = std::pow(latest_insstdev_->azimuth_dev * DEGREES_TO_RADIANS, 2);
       }
       else
       {
@@ -988,16 +1420,28 @@ namespace novatel_gps_driver
         imu->orientation_covariance[8] = 1e-3;
       }
 
-      imu->angular_velocity.x = corrimudata->pitch_rate * imu_rate_;
-      imu->angular_velocity.y = corrimudata->roll_rate * imu_rate_;
-      imu->angular_velocity.z = corrimudata->yaw_rate * imu_rate_;
+      // CORRIMUDATA reports rotations about and accelerations along the axes of
+      // the SPAN frame, which is x right, y forward, z up: pitch rate is about x,
+      // roll rate about y, lateral acceleration along x and longitudinal
+      // acceleration along y.  sensor_msgs/Imu is defined in the ROS body frame
+      // (REP 103), which is x forward, y left, z up, so the two are related by
+      // x_ros = y_span, y_ros = -x_span, z_ros = z_span.
+      //
+      // The values are increments accumulated over the time the log covers, so
+      // dividing by that time turns them into rates and accelerations.  That's the
+      // logging interval, not the IMU's sample period, which can be shorter.
+      // https://github.com/swri-robotics/novatel_gps_driver/issues/28
+      double scale = 1.0 / increment.interval;
+      imu->angular_velocity.x = corrimudata->roll_rate * scale;
+      imu->angular_velocity.y = -corrimudata->pitch_rate * scale;
+      imu->angular_velocity.z = corrimudata->yaw_rate * scale;
       imu->angular_velocity_covariance[0] =
       imu->angular_velocity_covariance[4] =
       imu->angular_velocity_covariance[8] = 1e-3;
 
-      imu->linear_acceleration.x = corrimudata->lateral_acceleration * imu_rate_;
-      imu->linear_acceleration.y = corrimudata->longitudinal_acceleration * imu_rate_;
-      imu->linear_acceleration.z = corrimudata->vertical_acceleration * imu_rate_;
+      imu->linear_acceleration.x = corrimudata->longitudinal_acceleration * scale;
+      imu->linear_acceleration.y = -corrimudata->lateral_acceleration * scale;
+      imu->linear_acceleration.z = corrimudata->vertical_acceleration * scale;
       imu->linear_acceleration_covariance[0] =
       imu->linear_acceleration_covariance[4] =
       imu->linear_acceleration_covariance[8] = 1e-3;
@@ -1017,6 +1461,19 @@ namespace novatel_gps_driver
     {
       imu_rate_forced_ = true;
     }
+    WarnIfImuLogRateMismatched();
+  }
+
+  void NovatelGps::WarnIfImuLogRateMismatched()
+  {
+    std::string warning = CheckImuLogRate(imu_log_period_ > 0.0 ? 1.0 / imu_log_period_ : -1.0, imu_rate_);
+    // The sample rate is re-detected from every RAWIMUXA, so only warn when the
+    // problem changes.
+    if (!warning.empty() && warning != last_imu_rate_warning_)
+    {
+      RCLCPP_WARN(node_.get_logger(), "%s", warning.c_str());
+    }
+    last_imu_rate_warning_ = warning;
   }
 
   void NovatelGps::SetSerialBaud(int32_t serial_baud)
@@ -1079,13 +1536,7 @@ namespace novatel_gps_driver
         auto imu = corrimudata_parser_.ParseBinary(msg);
         imu->header.stamp = stamp;
         corrimudata_msgs_.push_back(imu);
-        corrimudata_queue_.push(imu);
-        if (corrimudata_queue_.size() > MAX_BUFFER_SIZE)
-        {
-          // TODO pjr Make this a _THROTTLE log when it's available
-          RCLCPP_WARN(node_.get_logger(), "CORRIMUDATA queue overflow.");
-          corrimudata_queue_.pop();
-        }
+        QueueCorrImuIncrement(corrimudata_queue_, imu, "CORRIMUDATA");
         GenerateImuMessages();
         break;
       }
@@ -1094,13 +1545,7 @@ namespace novatel_gps_driver
         auto imu = corrimus_parser_.ParseBinary(msg);
         imu->header.stamp = stamp;
         corrimus_msgs_.push_back(imu);
-        corrimus_queue_.push(imu);
-        if (corrimus_queue_.size() > MAX_BUFFER_SIZE)
-        {
-          // TODO pjr Make this a _THROTTLE log when it's available
-          RCLCPP_WARN(node_.get_logger(), "CORRIMUS queue overflow.");
-          corrimus_queue_.pop();
-        }
+        QueueCorrImuIncrement(corrimus_queue_, imu, "CORRIMUS");
         GenerateImuMessages();
         break;
       }
@@ -1146,7 +1591,8 @@ namespace novatel_gps_driver
       {
         auto inspvax = inspvax_parser_.ParseBinary(msg);
         inspvax->header.stamp = stamp;
-        inspvax_msgs_.push_back(std::move(inspvax));
+        inspvax_msgs_.push_back(inspvax);
+        latest_inspvax_ = inspvax;
         break;
       }
       case InsstdevParser::MESSAGE_ID:
@@ -1195,8 +1641,42 @@ namespace novatel_gps_driver
         rxstatus_msgs_.push_back(std::move(rxstatus));
         break;
       }
+      case RawDmiParser::MESSAGE_ID:
+      {
+        auto rawdmi = rawdmi_parser_.ParseBinary(msg);
+        rawdmi->header.stamp = stamp;
+        rawdmi_msgs_.push_back(std::move(rawdmi));
+        break;
+      }
+      case InsUpdateStatusParser::MESSAGE_ID:
+      {
+        auto insupdatestatus = insupdatestatus_parser_.ParseBinary(msg);
+        insupdatestatus->header.stamp = stamp;
+        insupdatestatus_msgs_.push_back(std::move(insupdatestatus));
+        break;
+      }
+      case RawImuxParser::MESSAGE_ID:
+      case RawImuxParser::SHORT_MESSAGE_ID:
+      {
+        auto rawimux = rawimux_parser_.ParseBinary(msg);
+        rawimux->header.stamp = stamp;
+        UpdateImuType(rawimux->imu_type);
+        rawimux_msgs_.push_back(std::move(rawimux));
+        break;
+      }
+      case ClockSteeringParser::MESSAGE_ID:
+      {
+        auto clocksteering = clocksteering_parser_.ParseBinary(msg);
+        clocksteering_msgs_.push_back(std::move(clocksteering));
+        break;
+      }
       default:
-        RCLCPP_WARN(node_.get_logger(), "Unexpected binary message id: %u", msg.header_.message_id_);
+        // A log the driver doesn't parse keeps arriving at its logging rate, which
+        // can be hundreds of times a second, so only warn about each one once.
+        if (unexpected_binary_message_ids_.insert(msg.header_.message_id_).second)
+        {
+          RCLCPP_WARN(node_.get_logger(), "Unexpected binary message id: %u", msg.header_.message_id_);
+        }
         break;
     }
 
@@ -1306,13 +1786,7 @@ namespace novatel_gps_driver
       auto imu = corrimudata_parser_.ParseAscii(sentence);
       imu->header.stamp = stamp;
       corrimudata_msgs_.push_back(imu);
-      corrimudata_queue_.push(imu);
-      if (corrimudata_queue_.size() > MAX_BUFFER_SIZE)
-      {
-        // TODO pjr Make this a _THROTTLE log when it's available
-        RCLCPP_WARN(node_.get_logger(), "CORRIMUDATA queue overflow.");
-        corrimudata_queue_.pop();
-      }
+      QueueCorrImuIncrement(corrimudata_queue_, imu, "CORRIMUDATA");
       GenerateImuMessages();
     }
     else if (sentence.id == "INSCOVA")
@@ -1340,7 +1814,8 @@ namespace novatel_gps_driver
     {
       auto inspvax = inspvax_parser_.ParseAscii(sentence);
       inspvax->header.stamp = stamp;
-      inspvax_msgs_.push_back(std::move(inspvax));
+      inspvax_msgs_.push_back(inspvax);
+      latest_inspvax_ = inspvax;
     }
     else if (sentence.id == "INSSTDEVA")
     {
@@ -1382,55 +1857,24 @@ namespace novatel_gps_driver
       rxstatus->header.stamp = stamp;
       rxstatus_msgs_.push_back(std::move(rxstatus));
     }
+    else if (sentence.id == "RAWDMIA")
+    {
+      auto rawdmi = rawdmi_parser_.ParseAscii(sentence);
+      rawdmi->header.stamp = stamp;
+      rawdmi_msgs_.push_back(std::move(rawdmi));
+    }
+    else if (sentence.id == "INSUPDATESTATUSA")
+    {
+      auto insupdatestatus = insupdatestatus_parser_.ParseAscii(sentence);
+      insupdatestatus->header.stamp = stamp;
+      insupdatestatus_msgs_.push_back(std::move(insupdatestatus));
+    }
     else if (sentence.id == "RAWIMUXA")
     {
-      static std::map<std::string, std::pair<double, std::string>> rates = {
-        { "0",  std::pair<double, std::string>(100, "Unknown") },
-        { "1",  std::pair<double, std::string>(100, "Honeywell HG1700 AG11") },
-        { "4",  std::pair<double, std::string>(100, "Honeywell HG1700 AG17") },
-        { "5",  std::pair<double, std::string>(100, "Honeywell HG1700 CA29") },
-        { "8",  std::pair<double, std::string>(200, "Litton LN-200 (200hz model)") },
-        { "11", std::pair<double, std::string>(100, "Honeywell HG1700 AG58") },
-        { "12", std::pair<double, std::string>(100, "Honeywell HG1700 AG62") },
-        { "13", std::pair<double, std::string>(200, "iMAR ilMU-FSAS") },
-        { "16", std::pair<double, std::string>(200, "KVH 1750 IMU") },
-        { "19", std::pair<double, std::string>(200, "Northrop Grumman Litef LCI-1") },
-        { "20", std::pair<double, std::string>(100, "Honeywell HG1930 AA99") },
-        { "26", std::pair<double, std::string>(100, "Northrop Grumman Litef ISA-100C") },
-        { "27", std::pair<double, std::string>(100, "Honeywell HG1900 CA50") },
-        { "28", std::pair<double, std::string>(100, "Honeywell HG1930 CA50") },
-        { "31", std::pair<double, std::string>(200, "Analog Devices ADIS16488") },
-        { "32", std::pair<double, std::string>(125, "Sensonor STIM300") },
-        { "33", std::pair<double, std::string>(200, "KVH1750 IMU") },
-        { "34", std::pair<double, std::string>(200, "Northrop Grumman Litef ISA-100") },
-        { "38", std::pair<double, std::string>(400, "Northrop Grumman Litef ISA-100 400Hz") },
-        { "39", std::pair<double, std::string>(400, "Northrop Grumman Litef ISA-100C 400Hz") },
-        { "41", std::pair<double, std::string>(125, "Epson G320N") },
-        { "45", std::pair<double, std::string>(200, "KVH 1725 IMU?") }, //(This was a guess based on the 1750
-                       // as the actual rate is not documented and the specs are similar)
-        { "52", std::pair<double, std::string>(200, "Litef microIMU") },
-        { "56", std::pair<double, std::string>(125, "Sensonor STIM300, Direct Connection") },
-        { "58", std::pair<double, std::string>(200, "Honeywell HG4930 AN01") },
-        { "61", std::pair<double, std::string>(100, "Epson G370N") },
-       };
-
-      // Parse out the IMU type then save it, we don't care about the rest (3rd field)
-      std::string id = sentence.body.size() > 1 ? sentence.body[1] : "";
-      if (rates.find(id) != rates.end())
-      {
-        double rate = rates[id].first;
-        RCLCPP_INFO(node_.get_logger(), "IMU Type %s Found, Rate: %f Hz", rates[id].second.c_str(), (float)rate);
-        // Set the rate only if it hasn't been forced already
-        if (!imu_rate_forced_)
-        {
-          SetImuRate(rate, false); // Dont force set from here so it can be configured elsewhere
-        }
-      }
-      else
-      {
-        // Error because the imu type was unknown
-        RCLCPP_ERROR(node_.get_logger(), "Unknown IMU Type Received: %s", id.c_str());
-      }
+      auto rawimux = rawimux_parser_.ParseAscii(sentence);
+      rawimux->header.stamp = stamp;
+      UpdateImuType(rawimux->imu_type);
+      rawimux_msgs_.push_back(std::move(rawimux));
     }
     else if (sentence.id == "CLOCKSTEERINGA")
     {
@@ -1443,6 +1887,7 @@ namespace novatel_gps_driver
 
   bool NovatelGps::Write(const std::string& command)
   {
+    std::lock_guard<std::mutex> lock(write_mutex_);
     std::vector<uint8_t> bytes(command.begin(), command.end());
 
     if (connection_ == SERIAL)
@@ -1474,7 +1919,7 @@ namespace novatel_gps_driver
           Disconnect();
         }
         RCLCPP_DEBUG(node_.get_logger(), "Wrote %lu bytes.", written);
-        return written == (int32_t) command.length();
+        return written == command.length();
       }
       catch (std::exception& e)
       {
@@ -1491,38 +1936,341 @@ namespace novatel_gps_driver
     return false;
   }
 
+  std::string BuildLogCommand(const std::string& name, double period)
+  {
+    std::stringstream command;
+    command << std::setprecision(3);
+    if (name.find("heading2") != std::string::npos ||
+        name.find("dualantennaheading") != std::string::npos ||
+        name.find("rawdmi") != std::string::npos)
+    {
+      command << "log " << name << " onnew" << "\r\n";
+    }
+    else if (period < 0.0)
+    {
+      command << "log " << name << " onchanged\r\n";
+    }
+    else if (period == 0.0)
+    {
+      command << "log " << name << " onnew\r\n";
+    }
+    else
+    {
+      command << "log " << name << " ontime " << period << "\r\n";
+    }
+    return command.str();
+  }
+
+  void AddImuMessageOpts(NovatelMessageOpts& opts, const std::string& format_suffix,
+                         double imu_rate)
+  {
+    double period = 1.0 / imu_rate;
+    opts["corrimudata" + format_suffix] = period;
+    opts["inscov" + format_suffix] = 1.0;
+    opts["inspva" + format_suffix] = period;
+    opts["inspvax" + format_suffix] = period;
+    opts["insstdev" + format_suffix] = 1.0;
+  }
+
+  std::string BuildInsTranslationCommand(const std::string& translation_type,
+                                         const std::vector<double>& offset,
+                                         const std::vector<double>& offset_stdev)
+  {
+    if (offset.size() != 3)
+    {
+      return "";
+    }
+
+    std::stringstream command;
+    command << "SETINSTRANSLATION " << translation_type << " "
+            << offset[0] << " " << offset[1] << " " << offset[2];
+    if (offset_stdev.size() == 3)
+    {
+      command << " " << offset_stdev[0] << " " << offset_stdev[1] << " " << offset_stdev[2];
+    }
+    command << "\r\n";
+    return command.str();
+  }
+
+  std::string BuildInsRotationCommand(const std::vector<double>& rotation,
+                                      const std::vector<double>& rotation_stdev)
+  {
+    if (rotation.size() != 3)
+    {
+      return "";
+    }
+
+    std::stringstream command;
+    command << "SETINSROTATION RBV "
+            << rotation[0] << " " << rotation[1] << " " << rotation[2];
+    if (rotation_stdev.size() == 3)
+    {
+      command << " " << rotation_stdev[0] << " " << rotation_stdev[1] << " " << rotation_stdev[2];
+    }
+    command << "\r\n";
+    return command.str();
+  }
+
+  DualAntennaStatus DecodeDualAntennaStatus(uint32_t aux2stat)
+  {
+    DualAntennaStatus status{};
+    status.not_powered = aux2stat & 0x10000000;
+    status.open = aux2stat & 0x20000000;
+    status.shorted = aux2stat & 0x40000000;
+    return status;
+  }
+
+  std::string BuildDmiConfigCommand(const std::string& source)
+  {
+    std::string upper = source;
+    std::transform(upper.begin(), upper.end(), upper.begin(),
+                   [](unsigned char c) { return std::toupper(c); });
+
+    if (upper == "DISABLE")
+    {
+      return "DMICONFIG DMI1 DISABLE\r\n";
+    }
+    if (upper == "EXT_COUNT" || upper == "EXT_VELOCITY" || upper == "IMU" || upper == "ENCLOSURE")
+    {
+      return "DMICONFIG DMI1 ENABLE " + upper + "\r\n";
+    }
+    return "";
+  }
+
+  std::string BuildConfigureCommand(const std::string& command, std::string& warning)
+  {
+    warning.clear();
+
+    const size_t first = command.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos)
+    {
+      warning = "Ignoring an empty configure_commands entry.";
+      return "";
+    }
+    const std::string trimmed = command.substr(first, command.find_last_not_of(" \t\r\n") - first + 1);
+
+    std::stringstream message;
+    if (trimmed.find_first_of("\r\n") != std::string::npos)
+    {
+      message << "Ignoring the configure_commands entry \"" << trimmed << "\": it contains a line "
+                 "ending, so it would send more than one command.  Give each command its own entry.";
+      warning = message.str();
+      return "";
+    }
+    for (const char c : trimmed)
+    {
+      if (std::isprint(static_cast<unsigned char>(c)) == 0)
+      {
+        message << "Ignoring a configure_commands entry: it contains a character the receiver "
+                   "can't read as part of an ASCII command.";
+        warning = message.str();
+        return "";
+      }
+    }
+    if (trimmed.length() > MAX_CONFIGURE_COMMAND_LENGTH)
+    {
+      message << "Ignoring a configure_commands entry that is " << trimmed.length()
+              << " characters long; the limit is " << MAX_CONFIGURE_COMMAND_LENGTH << ".";
+      warning = message.str();
+      return "";
+    }
+
+    // Commands that outlive the driver are worth saying out loud, but they are the
+    // operator's to send.
+    std::string verb = trimmed.substr(0, trimmed.find_first_of(" \t"));
+    std::transform(verb.begin(), verb.end(), verb.begin(),
+                   [](unsigned char c) { return std::toupper(c); });
+    if (verb == "SAVECONFIG" || verb == "FRESET")
+    {
+      message << "The configure_commands entry \"" << trimmed << "\" changes the receiver's "
+                 "non-volatile configuration, which outlasts this node.";
+      warning = message.str();
+    }
+
+    return trimmed + "\r\n";
+  }
+
+  double ValidatePositiveParameter(const std::string& name, double value, double fallback,
+                                   std::string& warning)
+  {
+    warning.clear();
+    if (value > 0.0 && std::isfinite(value))
+    {
+      return value;
+    }
+
+    std::stringstream message;
+    message << name << " must be a positive number, but it was set to " << value
+            << "; using " << fallback << " instead.";
+    warning = message.str();
+    return fallback;
+  }
+
+  std::string CheckImuLogRate(double log_rate, double sample_rate)
+  {
+    if (log_rate <= 0.0 || sample_rate <= 0.0)
+    {
+      return "";
+    }
+
+    std::stringstream warning;
+    double samples_per_log = sample_rate / log_rate;
+    if (samples_per_log < 1.0 - 1e-6)
+    {
+      warning << "CORRIMUDATA is logged at " << log_rate << " Hz, faster than the IMU's " << sample_rate
+              << " Hz sample rate, so some logs will hold no IMU data.  Set imu_rate to " << sample_rate
+              << " Hz or less.";
+    }
+    else if (std::fabs(samples_per_log - std::round(samples_per_log)) > 1e-6)
+    {
+      warning << "CORRIMUDATA is logged at " << log_rate << " Hz, which doesn't divide the IMU's " << sample_rate
+              << " Hz sample rate evenly, so the number of IMU samples in each log will vary.  Set imu_rate to "
+              << sample_rate << " Hz divided by a whole number.";
+    }
+    return warning.str();
+  }
+
+  bool GetImuTypeInfo(uint8_t imu_type, double& sample_rate, std::string& name)
+  {
+    static const std::map<uint8_t, std::pair<double, std::string>> IMU_TYPES = {
+      { 0, { 100, "Unknown" } },
+      { 1, { 100, "Honeywell HG1700 AG11" } },
+      { 4, { 100, "Honeywell HG1700 AG17" } },
+      { 5, { 100, "Honeywell HG1700 CA29" } },
+      { 8, { 200, "Litton LN-200 (200hz model)" } },
+      { 11, { 100, "Honeywell HG1700 AG58" } },
+      { 12, { 100, "Honeywell HG1700 AG62" } },
+      { 13, { 200, "iMAR ilMU-FSAS" } },
+      { 16, { 200, "KVH 1750 IMU" } },
+      { 19, { 200, "Northrop Grumman Litef LCI-1" } },
+      { 20, { 100, "Honeywell HG1930 AA99" } },
+      { 26, { 100, "Northrop Grumman Litef ISA-100C" } },
+      { 27, { 100, "Honeywell HG1900 CA50" } },
+      { 28, { 100, "Honeywell HG1930 CA50" } },
+      { 31, { 200, "Analog Devices ADIS16488" } },
+      { 32, { 125, "Sensonor STIM300" } },
+      { 33, { 200, "KVH1750 IMU" } },
+      { 34, { 200, "Northrop Grumman Litef ISA-100" } },
+      { 38, { 400, "Northrop Grumman Litef ISA-100 400Hz" } },
+      { 39, { 400, "Northrop Grumman Litef ISA-100C 400Hz" } },
+      { 41, { 125, "Epson G320N" } },
+      { 45, { 200, "KVH 1725 IMU?" } }, //(This was a guess based on the 1750
+                   // as the actual rate is not documented and the specs are similar)
+      { 52, { 200, "Litef microIMU" } },
+      { 56, { 125, "Sensonor STIM300, Direct Connection" } },
+      { 58, { 200, "Honeywell HG4930 AN01" } },
+      { 61, { 100, "Epson G370N" } },
+    };
+
+    auto type = IMU_TYPES.find(imu_type);
+    if (type == IMU_TYPES.end())
+    {
+      return false;
+    }
+    sample_rate = type->second.first;
+    name = type->second.second;
+    return true;
+  }
+
+  void NovatelGps::RequestImuType()
+  {
+    imu_type_requested_ = true;
+    // Due immediately
+    last_imu_type_request_ = std::chrono::steady_clock::time_point();
+  }
+
+  void NovatelGps::RequestImuTypeIfDue()
+  {
+    if (!imu_type_requested_ || last_imu_type_ >= 0 || !is_connected_)
+    {
+      return;
+    }
+
+    auto now = std::chrono::steady_clock::now();
+    if (now - last_imu_type_request_ >= std::chrono::seconds(1))
+    {
+      last_imu_type_request_ = now;
+      Write("log rawimuxa once\r\n");
+    }
+  }
+
+  void NovatelGps::UpdateImuType(uint8_t imu_type)
+  {
+    if (imu_type == last_imu_type_)
+    {
+      return;
+    }
+    last_imu_type_ = imu_type;
+
+    double rate = 0.0;
+    std::string name;
+    if (!GetImuTypeInfo(imu_type, rate, name))
+    {
+      RCLCPP_ERROR(node_.get_logger(), "Unknown IMU Type Received: %u", imu_type);
+      return;
+    }
+
+    RCLCPP_INFO(node_.get_logger(), "IMU Type %s Found, Rate: %f Hz", name.c_str(), rate);
+    // Set the rate only if it hasn't been forced already
+    if (!imu_rate_forced_)
+    {
+      SetImuRate(rate, false); // Dont force set from here so it can be configured elsewhere
+    }
+  }
+
   bool NovatelGps::Configure(NovatelMessageOpts const& opts)
   {
+    for (const auto& option : opts)
+    {
+      if (option.first.rfind("corrimudata", 0) == 0)
+      {
+        imu_log_period_ = option.second;
+        WarnIfImuLogRateMismatched();
+      }
+    }
+
     bool configured = true;
     configured = configured && Write("unlogall THISPORT_ALL\r\n");
 
-    if (apply_vehicle_body_rotation_)
+    // Antenna lever arms and the IMU-to-vehicle rotation, if configured, so the
+    // receiver has them before it starts computing an INS solution.
+    if (!ins_translation_ant1_command_.empty())
     {
-      configured = configured && Write("vehiclebodyrotation 0 0 90\r\n");
-      configured = configured && Write("applyvehiclebodyrotation\r\n");
+      configured = configured && Write(ins_translation_ant1_command_);
+    }
+    if (!ins_translation_ant2_command_.empty())
+    {
+      configured = configured && Write(ins_translation_ant2_command_);
+    }
+    if (!ins_rotation_rbv_command_.empty())
+    {
+      configured = configured && Write(ins_rotation_rbv_command_);
+    }
+    // Wheel sensor input, if configured, for the same reason.
+    if (!dmi_config_command_.empty())
+    {
+      configured = configured && Write(dmi_config_command_);
+    }
+
+    // Whatever else the user asked to send, after the driver's own configuration so
+    // it can be overridden, and before any logs are requested so the receiver is set
+    // up by the time data starts arriving.
+    // https://github.com/swri-robotics/novatel_gps_driver/issues/12
+    // Nothing can be sent to a capture file, so don't claim it was.
+    if (connection_ != PCAP)
+    {
+      for (const auto& command : configure_commands_)
+      {
+        RCLCPP_INFO(node_.get_logger(), "Sending configuration command: %s",
+                    command.substr(0, command.find_first_of("\r\n")).c_str());
+        configured = configured && Write(command);
+      }
     }
 
     for(const auto& option : opts)
     {
-      std::stringstream command;
-      command << std::setprecision(3);
-      if (option.first.find("heading2") != std::string::npos)
-      {
-      	command << "log " << option.first << " onnew " << "\r\n";
-      }
-      else if (option.second < 0.0)
-      {
-        command << "log " << option.first << " onchanged\r\n";
-      }
-      else
-      {
-      	command << "log " << option.first << " ontime " << option.second << "\r\n";
-      }
-      configured = configured && Write(command.str());
+      configured = configured && Write(BuildLogCommand(option.first, option.second));
     }
-
-    // Log the IMU data once to get the IMU type
-    configured = configured && Write("log rawimuxa\r\n");
 
     return configured;
   }
