@@ -149,6 +149,41 @@ Nodelets
         - `connection_type`: Type of physical connection to the device
             - One of `serial`, `tcp`, `udp`, or `pcap`
             - Default: `serial`
+        - `configure_commands`: Receiver commands the driver sends on connect, one command per entry with no line
+        endings, for configuration it has no parameter of its own for.  See the
+        [OEM7 command reference](https://docs.novatel.com/OEM7/Content/Commands/Commands.htm).
+            - e.g. `["CONNECTIMU COM3 HG1700_AG58", "SETIMUORIENTATION 5"]`
+            - Sent after the commands the driver builds from its own parameters (`dmi_source`,
+            `ins_translation_ant1_offset`, `ins_rotation_rbv`, ...) and before it requests any logs, so they can
+            override those settings without interfering with logging.
+            - Re-sent every time the driver reconnects, so a receiver that was power cycled comes back configured.
+            - An entry that is empty, holds a line ending, holds an unprintable character, or is longer than 500
+            characters is dropped with a warning.  Anything else is passed through as typed, so a command that
+            writes the receiver's non-volatile configuration (`SAVECONFIG`, `FRESET`) will do exactly that; the
+            driver logs a warning when it sends one.
+            - Ignored for `pcap` connections, which can't be written to.
+            - Default: Empty
+        - `correction_connection_type`: The correction port's connection type, one of `serial`, `tcp`, or `udp`.
+            - Default: the value of `connection_type`
+        - `correction_device`: Where RTCM corrections received on the `/rtcm` topic are written: a serial device,
+        or a `host:port` for `tcp` and `udp`.
+            - The receiver port has to be set to
+            [`INTERFACEMODE`](https://docs.novatel.com/OEM7/Content/Commands/INTERFACEMODE.htm) `... RTCMV3`, which
+            stops it accepting NovAtel commands, so this is normally **not** the port the driver reads logs from.
+            - Set it to the same string as `device` to send corrections over the driver's own connection instead of
+            opening a second port.  That needs the port set to `INTERFACEMODE ... AUTO` so it accepts both commands
+            and corrections.
+            - The port is opened when the driver connects to the receiver, and stays open across reconnections
+            to it.  If it can't be opened the driver logs an error, keeps running without corrections, and retries
+            every `correction_reconnect_delay_s` seconds.
+            - Empty means corrections are not sent and `/rtcm` is not subscribed to.
+            - Default: Empty
+        - `correction_reconnect_delay_s`: How long to wait, in seconds, between attempts to open a correction
+        port that could not be opened.
+            - A value that isn't positive is ignored and the default is used instead.
+            - Default: `5.0`
+        - `correction_serial_baud`: Baud rate for a serial correction port.
+            - Default: the value of `serial_baud`
         - `device`: Location of device connection.
             - For `serial` connections, the device node; e. g., `/dev/ttyUSB0`
             - For `tcp` or `udp` connections, a `host:port` specification.
@@ -158,21 +193,65 @@ Nodelets
             - For `pcap` connections, the location of a `.pcap` capture file. 
             Note that the node will exit automatically after finishing playback.
             - Default: Empty
+        - `dmi_source`: Where the receiver gets wheel sensor (Distance Measurement Instrument) data, sent via
+        [DMICONFIG](https://docs.novatel.com/OEM7/Content/SPAN_Commands/DMICONFIG.htm) on connect, so the INS can use
+        wheel ticks to reduce drift when GNSS is unavailable.  Requires OEM7 firmware 7.07 or newer.
+            - `EXT_COUNT` or `EXT_VELOCITY`: cumulative or incremental wheel ticks sent to the receiver in RAWDMI commands
+            - `IMU`: a wheel sensor wired to a NovAtel IMU
+            - `ENCLOSURE`: a wheel sensor wired to a PwrPak7 or CPT7
+            - `DISABLE`: turn wheel sensor input off
+            - Empty means don't send it, leaving the receiver's existing configuration in place.
+            - Default: Empty
         - `frame_id`: ROS TF frame to place in the header of published messages.
             - Default: Empty
+        - `gpsfix_sync_tol`: Maximum difference, in seconds, between the timestamps of a BESTPOS and a BESTVEL
+        log for them to be treated as synchronized when building a `gps_msgs/GPSFix`.
+            - Default: `0.01`
+        - `gpsfix_sync_timeout`: When `wait_for_sync` is `true`, the maximum time, in seconds of GPS time, that a
+        BESTPOS log will wait for a matching BESTVEL.  After this, the `gps_msgs/GPSFix` is published with speed &
+        track set to NaN.  It is also published that way if a newer BESTVEL has already arrived, or if enough BESTPOS logs
+        have backed up that it would otherwise be discarded.
+            - Default: `1.0`
         - `imu_frame_id`: TF frame id to use in IMU messages.
             - Default: Empty
         - `imu_rate`: Desired logging rate in Hz for IMU messages.
             - This is set as the rate for `CORRIMUDATA` logs.
+            - Should be the IMU's sample rate, or that divided by a whole number.  `CORRIMUDATA` accumulates the IMU
+            samples over each logging interval, so logging it faster than the IMU samples gives logs that hold no data,
+            and logging it at a rate that doesn't divide the sample rate gives logs that hold varying amounts.  The
+            driver logs a warning if it's set otherwise.
             - Default: `100`
         - `imu_sample_rate`: Sample rate of the connected IMU.  Normally this is automatically detected based on the IMU type.
+        - `ins_rotation_rbv`: `[x, y, z]` Euler angle rotation, in degrees, from the IMU body frame to the vehicle
+        frame, sent to the receiver via `SETINSROTATION RBV` on connect.
+            - Default: Empty (don't send this command, leaving the receiver's existing configuration in place)
+            - Must be empty or exactly 3 elements.
+        - `ins_rotation_rbv_stdev`: `[x, y, z]` standard deviation of `ins_rotation_rbv`, in degrees.
+            - Default: Empty (use the receiver's default uncertainty)
+            - May be left empty even when `ins_rotation_rbv` is set. Must be empty or exactly 3 elements.
+        - `ins_translation_ant1_offset`: `[x, y, z]` lever arm, in meters, from the IMU to the primary GNSS antenna,
+        in the IMU body frame, sent to the receiver via `SETINSTRANSLATION ANT1` on connect.
+            - Default: Empty (don't send this command)
+            - Must be empty or exactly 3 elements.
+        - `ins_translation_ant1_offset_stdev`: `[x, y, z]` standard deviation of `ins_translation_ant1_offset`, in
+        meters.
+            - Default: Empty (use the receiver's default uncertainty)
+            - May be left empty even when `ins_translation_ant1_offset` is set. Must be empty or exactly 3 elements.
+        - `ins_translation_ant2_offset`: Like `ins_translation_ant1_offset`, but for the secondary antenna on a
+        dual-antenna receiver, sent via `SETINSTRANSLATION ANT2`.
+            - Default: Empty (don't send this command)
+        - `ins_translation_ant2_offset_stdev`: Like `ins_translation_ant1_offset_stdev`, but for
+        `ins_translation_ant2_offset`.
+            - Default: Empty (use the receiver's default uncertainty)
         - `polling_period`: Desired period between GPS messages. 
             - This will be set as the period for `GPGGA`, `GPRMC`, `GPGSA`, `BESTPOS`, 
             and `BESTVEL` logs.
             - Default: `0.05` (20 Hz)
+            - A value that is non-positive is ignored, and the default is used instead.
         - `expected_rate`: Expected publish rate of GPS messages.
             - If time between GPS message stamps is greater than 1.5 times the excepted publish rate, diagnostic warning is published.
             - Default: Based on `polling_period` parameter: `20.0` (20Hz)
+            - A value that isn't a positive number is ignored, and the default is used instead.
         - `publish_clocksteering`: `true` to publish novatel_gps_msgs/ClockSteering messages.
             - Default: `false`
         - `publish_diagnostics`: `true` to publish node diagnostics.
@@ -184,13 +263,22 @@ Nodelets
         - `publish_gphdt`: `true` to publish novatel_gps_msgs/Gphdt messages.
             - Default: `false`
         - `publish_imu_messages`: `true` to publish novatel_gps_msgs/NovatelCorrectedImuData, novatel_gps_msgs/Inspva,
-        novatel_gps_msgs/Inspvax, novatel_gps_msgs/Insstdev, and sensor_msgs/Imu messages.
+        novatel_gps_msgs/Inspvax2, novatel_gps_msgs/Insstdev2, and sensor_msgs/Imu messages.
             - Default: `false`
         - `publish_nmea_messages`: `true` to publish novatel_gps_msgs/Gpgga and novatel_gps_msgs/Gprmc messages.
             - Default: `false`
+        - `publish_nmea_sentences`: `true` to publish every NMEA sentence the receiver sends as an
+        nmea_msgs/Sentence message on the `nmea_sentence` topic, unparsed and exactly as it arrived.
+            - Sentences the driver has no parser for are published too, but which sentences the receiver
+            sends is still controlled by the `publish_gpgsa`, `publish_gpgsv`, `publish_gphdt` and
+            `publish_nmea_messages` parameters.
+            - Default: `false`
         - `publish_novatel_dual_antenna_heading`: `true` to publish novatel_gps_msgs/NovatelDualAntennaHeading messages.
             - Default: `false`
-        - `publish_novatel_heading2`: `true` to publish novatel_gps_msgs/Heading2 messages.
+        - `publish_novatel_heading2`: `true` to publish novatel_gps_msgs/NovatelHeading2 messages.
+            - Default: `false`
+        - `publish_novatel_insupdatestatus`: `true` to publish novatel_gps_msgs/NovatelInsUpdateStatus messages.
+        These are only published when the values change.
             - Default: `false`
         - `publish_novatel_positions`: `true` to publish novatel_gps_msgs/NovatelPosition messages.  Note that even if
         this is false, these logs will always be requested from the receiver in order to generate `gps_msgs/GPSFix`
@@ -200,12 +288,22 @@ Nodelets
         these messages will be used to fill in the DoP values in `gps_msgs/GPSFix` messages.  Note that these messages
         are only published when the values change, not at the standard polling rate.
             - Default: `false`
+        - `publish_novatel_rawdmi`: `true` to publish novatel_gps_msgs/NovatelRawDmi wheel sensor messages.
+            - Default: `false`
         - `publish_novatel_utm_positions`: `true` to publish novatel_gps_msgs/NovatelUtmPosition messages.
             - Default: `false`
         - `publish_novatel_velocity`: `true` to publish novatel_gps_msgs/NovatelVelocity messages.  If set, the data
         from these messages will be used to fill in the speed and track values in `gps_msgs/GPSFix` messages.
             - Default: `false`
         - `publish_novatel_xyz_positions`: `true` to publish novatel_gps_msgs/NovatelXYZ messages.
+            - Default: `false`
+        - `publish_rawimux`: `true` to publish novatel_gps_msgs/NovatelRawImu messages, from
+        [RAWIMUX](https://docs.novatel.com/OEM7/Content/SPAN_Logs/RAWIMUX.htm) logs, e.g. for post-processing.
+            - These are raw counts, logged at the IMU's full rate (`onnew`), since raw IMU data can't be logged
+            `ontime`.  NovAtel's reference has the scale factors for converting them to physical units.
+            - This is a lot of data: at 200 Hz in binary, about 144 kbit/s, which is more than a serial link at the
+            default `serial_baud` can carry.  NovAtel also recommends logging only one log faster than 50 Hz at a
+            time, and `publish_imu_messages` already logs CORRIMUDATA and INSPVA at `imu_rate`.
             - Default: `false`
         - `publish_range_messages`: `true` to publish novatel_gps_msgs/Range messages.
             - Default: `false`
@@ -215,7 +313,14 @@ Nodelets
         - `publish_dual_antenna_diagnostic`: If true, publish diagnostics for the second antenna.
             - Ignored if `publish_diagnostics` is false.
             - Default: same as `publish_novatel_dual_antenna_heading`
-        - `publish_time_messages`: `true` to publish novatel_gps_msgs/NovatelTime (starting in version 5.0.0) or novatel_gps_msgs/Time (versions prior to 5.0.0) messages.
+        - `publish_wheel_sensor_diagnostic`: If true, publish a diagnostic reporting whether the INS is using the wheel
+        sensor, from INSUPDATESTATUS logs.
+            - Ignored if `publish_diagnostics` is false.
+            - Default: `true` if `dmi_source` enables the wheel sensor, `false` otherwise
+        - `publish_time_messages`: `true` to publish novatel_gps_msgs/NovatelTime messages.  Note that this
+        message is named novatel_gps_msgs/Time on Lyrical and older.
+            - Default: `false`
+        - `publish_time_reference`: `true` to publish sensor_msgs/TimeReference messages.
             - Default: `false`
         - `publish_trackstat`: `true` to publish novatel_gps_msgs/Trackstat messages.
             - Default: `false`
@@ -225,7 +330,14 @@ Nodelets
             - Default: `0.5`
         - `serial_baud`: Select the serial baud rate to be used in a serial connection.
             - Default: `115200`
-        - `spam_frame_to_ros_frame`: Translate the SPAN coordinate frame to a ROS coordinate frame using the VEHICLEBODYROTATION and APPLYVEHICLEBODYROTATION commands.
+        - `span_frame_to_ros_frame`: **Deprecated and ignored.**  Setting it logs a warning and has no effect.
+            - `sensor_msgs/Imu` is always published in the ROS body frame (REP 103: x forward, y left, z up),
+            with yaw measured counter-clockwise from East rather than as an azimuth clockwise from North.
+            The driver converts out of the SPAN frame (x right, y forward, z up, azimuth clockwise from North)
+            itself, so the receiver no longer needs to be asked to do it.
+            - This previously sent `VEHICLEBODYROTATION` and `APPLYVEHICLEBODYROTATION`, which could never do
+            the whole job: they rotate only the attitude logs (INSPVA, INSPVAS, INSPVAX, INSATT, INSATTS,
+            INSATTX), leaving the CORRIMUDATA rates and accelerations in the SPAN frame.
             - Default: `false`
         - `use_binary_messages`: `true` to request binary NovAtel logs, `false` to request ASCII.
             - Binary logs are much more efficient and effectively required for IMU data,
@@ -234,13 +346,15 @@ Nodelets
         - `wait_for_sync`: `true` in order to wait for both BESTPOS and BESTVEL messages to arrive before publishing
         `gps_msgs/GPSFix` messages.  If this is `false`, GPSFix messages will be published immediately when BESTPOS
         messages are received, but a side effect is that the driver will often be unable to fill in the speed & track
-        fields.  This has no effect if `publish_novatel_velocity` is `false`.
+        fields, which will be NaN.  This has no effect if `publish_novatel_velocity` is `false`.
             - Default: `true`
         - `loop` : `true` to keep replaying PCAP reply. Only effective when device is `pcap`.
             - Default: `false`
     2. **ROS Topic Subscriptions**
-        - `/gps_sync` *(std_msgs/Time)*: *(optional)* Timestamped sync pulses from a DIO module. 
+        - `/gps_sync` *(builtin_interfaces/Time)*: *(optional)* Timestamped sync pulses from a DIO module. 
     These are used to improve the accuracy of the time stamps of the messages published.
+        - `/rtcm` *(rtcm_msgs/Message)*: *(optional)* RTCM correction messages, e.g. from an NTRIP client, written
+    to the receiver as they arrive.  Only subscribed to if `correction_device` is set.
     3. **ROS Topic Publications**
         - `/bestpos` *(novatel_gps_msgs/NovatelPosition)*: [BESTPOS](http://docs.novatel.com/OEM7/Content/Logs/BESTPOS.htm) logs
         - `/bestutm` *(novatel_gps_msgs/NovatelUtmPosition)*: [BESTUTM](http://docs.novatel.com/OEM7/Content/Logs/BESTUTM.htm) logs
@@ -248,24 +362,38 @@ Nodelets
         - `/bestxyz` *(novatel_gps_msgs/NovatelXYZ)*: [BESTXYZ](http://docs.novatel.com/OEM7/Content/Logs/BESTXYZ.htm) logs
         - `/clocksteering` *(novatel_gps_msgs/ClockSteering)*: [CLOCKSTEERING](http://docs.novatel.com/OEM7/Content/Logs/CLOCKSTEERING.htm) logs
         - `/corrimudata` *(novatel_gps_msgs/NovatelCorrectedImuData)*: [CORRIMUDATA](http://docs.novatel.com/OEM7/Content/SPAN_Logs/CORRIMUDATA.htm) logs
+            - **Note**: These are the receiver's increments accumulated over each logging interval, not rates.  A log that
+            is all zeros held no IMU samples; see `imu_rate`.  `/imu` converts them to rates.
         - `/diagnostics` *(diagnostic_msgs/DiagnosticArray)*: ROS diagnostics
         - `/dual_antenna_heading` *(novatel_gps_msgs/NovatelDualAntennaHeading)*: [DUALANTENNAHEADING](http://docs.novatel.com/OEM7/Content/Logs/DUALANTENNAHEADING.htm) logs
         - `/fix` *([sensor_msgs/NavSatFix](https://docs.ros.org/kinetic/api/sensor_msgs/html/msg/NavSatFix.html))*: GPSFix messages converted to NavSatFix messages
         - `/gpgga` *(novatel_gps_msgs/Gpgga)*: [GPGGA](http://docs.novatel.com/OEM7/Content/Logs/GPGGA.htm) logs
         - `/gpgsa` *(novatel_gps_msgs/Gpgsa)*: [GPGSA](http://docs.novatel.com/OEM7/Content/Logs/GPGSA.htm) logs
         - `/gpgsv` *(novatel_gps_msgs/Gpgsv)*: [GPGSV](http://docs.novatel.com/OEM7/Content/Logs/GPGSV.htm) logs
+        - `/gphdt` *(novatel_gps_msgs/Gphdt)*: [GPHDT](http://docs.novatel.com/OEM7/Content/Logs/GPHDT.htm) logs
         - `/gprmc` *(novatel_gps_msgs/Gprmc)*: [GPRMC](http://docs.novatel.com/OEM7/Content/Logs/GPRMC.htm) logs
         - `/gps` *([gps_msgs/GPSFix](http://docs.ros.org/kinetic/api/gps_common/html/msg/GPSFix.html))*: Fixes produced by combining BESTVEL, PSRDOP2 and BESTPOS messages together
             - **Note**:  GPSFix messages will always be published regardless of what other types are enabled.        
-        - `/heading2` *(novatel_gps_msgs/NovatelHeadin2)*: [HEADING2](http://docs.novatel.com/OEM7/Content/Logs/HEADING2.htm) logs
+        - `/heading2` *(novatel_gps_msgs/NovatelHeading2)*: [HEADING2](http://docs.novatel.com/OEM7/Content/Logs/HEADING2.htm) logs
         - `/imu` *([sensor_msgs/Imu](http://docs.ros.org/api/sensor_msgs/html/msg/Imu.html))*: CORRIMUDATA logs converted to Imu messages
+        - `/inscov` *(novatel_gps_msgs/Inscov)*: [INSCOV](http://docs.novatel.com/OEM7/Content/SPAN_Logs/INSCOV.htm) logs
         - `/inspva` *(novatel_gps_msgs/Inspva)*: [INSPVA](http://docs.novatel.com/OEM7/Content/SPAN_Logs/INSPVA.htm) logs
-        - `/inspvax` *(novatel_gps_msgs/Inspvax)*: [INSPVAX](http://docs.novatel.com/OEM7/Content/SPAN_Logs/INSPVAX.htm) logs
-        - `/insstdev` *(novatel_gps_msgs/Insstdev)*: [INSSTDEV](http://docs.novatel.com/OEM7/Content/SPAN_Logs/INSSTDEV.htm) logs
-        - `/psrdop2` *(novatel_gps_msgs/Psrdop2)*: [PSRDOP2](https://docs.novatel.com/OEM7/Content/Logs/PSRDOP2.htm) logs
+        - `/inspvax` *(novatel_gps_msgs/Inspvax2)*: [INSPVAX](http://docs.novatel.com/OEM7/Content/SPAN_Logs/INSPVAX.htm) logs
+        - `/insstdev` *(novatel_gps_msgs/Insstdev2)*: [INSSTDEV](http://docs.novatel.com/OEM7/Content/SPAN_Logs/INSSTDEV.htm) logs
+            - **Note**: Earlier versions published these as novatel_gps_msgs/Inspvax and novatel_gps_msgs/Insstdev, which
+            decoded the extended solution status incorrectly.  Those messages are still defined so old recordings can be
+            played back.
+        - `/nmea_sentence` *([nmea_msgs/Sentence](http://docs.ros.org/api/nmea_msgs/html/msg/Sentence.html))*: Every NMEA
+        sentence the receiver sends, republished unparsed and exactly as it arrived, for consumers that read NMEA directly
+        - `/insupdatestatus` *(novatel_gps_msgs/NovatelInsUpdateStatus)*: [INSUPDATESTATUS](https://docs.novatel.com/OEM7/Content/SPAN_Logs/INSUPDATESTATUS.htm) logs
+        - `/psrdop2` *(novatel_gps_msgs/NovatelPsrdop2)*: [PSRDOP2](https://docs.novatel.com/OEM7/Content/Logs/PSRDOP2.htm) logs
         - `/range` *(novatel_gps_msgs/Range)*: [RANGE](http://docs.novatel.com/OEM7/Content/Logs/RANGE.htm) logs
+        - `/rawdmi` *(novatel_gps_msgs/NovatelRawDmi)*: [RAWDMI](https://docs.novatel.com/OEM7/Content/SPAN_Logs/RAWDMI.htm) logs
+        - `/rawimux` *(novatel_gps_msgs/NovatelRawImu)*: [RAWIMUX](https://docs.novatel.com/OEM7/Content/SPAN_Logs/RAWIMUX.htm) logs
         - `/rosout` *(rosgraph_msgs/Log)*: Console output
-        - `/time` *(novatel_gps_msgs/Time, pre v5.0.0, novatel_gps_msgs/NovatelTime v5.0.0 and newer)*: [TIME](http://docs.novatel.com/OEM7/Content/Logs/TIME.htm) logs
+        - `/time` *(novatel_gps_msgs/NovatelTime)*: [TIME](http://docs.novatel.com/OEM7/Content/Logs/TIME.htm) logs
+            - **Note**: This message is named novatel_gps_msgs/Time on Lyrical and older.
+        - `/time_reference` *([sensor_msgs/TimeReference](https://docs.ros.org/en/rolling/p/sensor_msgs/interfaces/msg/TimeReference.html))*: Generic time reference messages for time synchronization
         - `/trackstat` *(novatel_gps_msgs/Trackstat)*: [TRACKSTAT](http://docs.novatel.com/OEM7/Content/Logs/TRACKSTAT.htm) logs
 
 Adding New Logs
