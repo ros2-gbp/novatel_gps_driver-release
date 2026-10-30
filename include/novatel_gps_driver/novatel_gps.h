@@ -32,8 +32,11 @@
 
 // std libraries
 #include <chrono>
+#include <cmath>
 #include <map>
+#include <mutex>
 #include <queue>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -47,15 +50,13 @@
 
 // Messages
 #include <gps_msgs/msg/gps_fix.hpp>
-
 #include <novatel_gps_msgs/msg/gpgga.hpp>
 #include <novatel_gps_msgs/msg/gprmc.hpp>
-
 #include <sensor_msgs/msg/imu.hpp>
 
 // Other libraries
+#include <nmea_msgs/msg/sentence.hpp>
 #include <swri_serial_util/serial_port.h>
-
 #include <pcap.h>
 
 // Local include files
@@ -79,7 +80,10 @@
 #include <novatel_gps_driver/parsers/inspvas.h>
 #include <novatel_gps_driver/parsers/inspvax.h>
 #include <novatel_gps_driver/parsers/insstdev.h>
+#include <novatel_gps_driver/parsers/insupdatestatus.h>
 #include <novatel_gps_driver/parsers/range.h>
+#include <novatel_gps_driver/parsers/rawdmi.h>
+#include <novatel_gps_driver/parsers/rawimux.h>
 #include <novatel_gps_driver/parsers/psrdop2.h>
 #include <novatel_gps_driver/parsers/time.h>
 #include <novatel_gps_driver/parsers/trackstat.h>
@@ -90,6 +94,185 @@ namespace novatel_gps_driver
   /// Define NovatelMessageOpts as a map from message name to log period (seconds)
   /// A negative period will be logged as "onchanged" rather than "ontime"
   typedef std::map<std::string, double> NovatelMessageOpts;
+
+  /**
+   * @brief Builds the "log" command Configure() sends to request one message from the
+   * receiver.
+   *
+   * HEADING2 and DUALANTENNAHEADING report a computed heading solution rather than a
+   * fixed-rate measurement, and NovAtel receivers don't reliably emit them on an ontime
+   * trigger, so they're requested with onnew instead. RAWDMI is also requested with
+   * onnew, since it's emitted as wheel sensor data arrives. A negative period requests
+   * onchanged, a period of 0 requests onnew, and anything else requests ontime at that
+   * period.
+   *
+   * @param name The message name, as it appears in a NovAtel log command (e.g. "bestposa").
+   * @param period The log period in seconds, as stored in a NovatelMessageOpts entry.
+   * @return The full command string, including the trailing "\r\n".
+   */
+  std::string BuildLogCommand(const std::string& name, double period);
+
+  /**
+   * @brief Adds the log options needed to produce sensor_msgs/Imu: CORRIMUDATA,
+   * INSPVA, and INSPVAX at imu_rate, plus INSCOV and INSSTDEV at 1 Hz.
+   *
+   * The IMU's sample rate isn't requested here: RAWIMUX, which reports the IMU
+   * type, can't be logged ontime.  See NovatelGps::RequestImuType().
+   *
+   * @param opts The options map to add entries to.
+   * @param format_suffix "a" or "b", appended to each rate-dependent log name.
+   * @param imu_rate The rate, in Hz, to request CORRIMUDATA/INSPVA/INSPVAX at.
+   */
+  void AddImuMessageOpts(NovatelMessageOpts& opts, const std::string& format_suffix,
+                         double imu_rate);
+
+  /**
+   * @brief Checks whether CORRIMUDATA is being logged at a rate the IMU's sample
+   * rate can fill evenly.
+   *
+   * CORRIMUDATA reports the IMU samples accumulated over each logging interval.
+   * Logged faster than the IMU samples, some intervals contain no sample and are
+   * all zeros; logged at a rate that doesn't divide the sample rate, the number of
+   * samples in each interval varies. See
+   * https://github.com/swri-robotics/novatel_gps_driver/issues/28.
+   *
+   * @param log_rate The rate CORRIMUDATA is logged at, in Hz.
+   * @param sample_rate The IMU's sample rate, in Hz.
+   * @return A warning describing the problem, or an empty string if there isn't one
+   * or either rate is unknown (non-positive).
+   */
+  std::string CheckImuLogRate(double log_rate, double sample_rate);
+
+  /**
+   * @brief Looks up an IMU type identifier, as reported in RAWIMUX logs.
+   * @param imu_type The IMU type identifier.
+   * @param[out] sample_rate The IMU's sample rate, in Hz.
+   * @param[out] name The IMU's name.
+   * @return true if the IMU type is known, false otherwise.
+   */
+  bool GetImuTypeInfo(uint8_t imu_type, double& sample_rate, std::string& name);
+
+  /**
+   * @brief Builds the SETINSTRANSLATION command that tells the receiver where a GNSS
+   * antenna is mounted relative to the IMU.
+   *
+   * Without this, the receiver assumes the antenna is at the IMU's origin, which
+   * biases the INS position/velocity solution by however far the antenna actually is
+   * from the IMU. See https://github.com/swri-robotics/novatel_gps_driver/issues/88.
+   *
+   * @param translation_type Which antenna this offset is for: "ANT1" or "ANT2".
+   * @param offset The [x, y, z] lever arm from the IMU to the antenna, in meters, in
+   * the IMU body frame. Must be empty (meaning "not configured") or exactly 3 elements;
+   * any other size is treated as empty.
+   * @param offset_stdev The [x, y, z] standard deviation of offset, in meters. May be
+   * empty to use the receiver's default uncertainty; any size other than 0 or 3 is
+   * treated as empty.
+   * @return The full command string including the trailing "\r\n", or an empty string
+   * if offset is not exactly 3 elements.
+   */
+  std::string BuildInsTranslationCommand(const std::string& translation_type,
+                                         const std::vector<double>& offset,
+                                         const std::vector<double>& offset_stdev);
+
+  /**
+   * @brief Builds the "SETINSROTATION RBV" command that tells the receiver how the IMU
+   * is rotated relative to the vehicle frame.
+   *
+   * Without this, the receiver can't correctly resolve attitude into the vehicle
+   * frame unless the IMU happens to be mounted perfectly aligned with the vehicle.
+   * See https://github.com/swri-robotics/novatel_gps_driver/issues/88.
+   *
+   * @param rotation The [x, y, z] Euler angle rotation from the IMU body frame to the
+   * vehicle frame, in degrees. Must be empty (meaning "not configured") or exactly 3
+   * elements; any other size is treated as empty.
+   * @param rotation_stdev The [x, y, z] standard deviation of rotation, in degrees. May
+   * be empty to use the receiver's default uncertainty; any size other than 0 or 3 is
+   * treated as empty.
+   * @return The full command string including the trailing "\r\n", or an empty string
+   * if rotation is not exactly 3 elements.
+   */
+  std::string BuildInsRotationCommand(const std::vector<double>& rotation,
+                                      const std::vector<double>& rotation_stdev);
+
+  /**
+   * @brief Builds the DMICONFIG command that enables or disables the receiver's wheel
+   * sensor (Distance Measurement Instrument) input, so the INS can use wheel ticks to
+   * reduce drift when GNSS is unavailable. Only DMI1 is supported by the receiver.
+   * See https://github.com/swri-robotics/novatel_gps_driver/issues/14.
+   *
+   * @param source How the receiver gets its wheel sensor data: "EXT_COUNT" or
+   * "EXT_VELOCITY" (cumulative or incremental ticks sent to it in RAWDMI commands),
+   * "IMU" (a sensor wired to a NovAtel IMU), or "ENCLOSURE" (a sensor wired to a
+   * PwrPak7 or CPT7); or "DISABLE" to turn the input off. Case-insensitive.
+   * @return The full command string including the trailing "\r\n", or an empty string
+   * if source is empty or not one of the values above.
+   */
+  std::string BuildDmiConfigCommand(const std::string& source);
+
+  /// The longest configuration command BuildConfigureCommand() will accept.  NovAtel
+  /// doesn't document one limit that holds for every command, so this is only a sanity
+  /// check to keep a malformed parameter from being sent to the receiver.
+  constexpr size_t MAX_CONFIGURE_COMMAND_LENGTH = 500;
+
+  /**
+   * @brief Prepares a user-supplied receiver configuration command for sending.
+   *
+   * The driver sends these on connect so a receiver can be set up (CONNECTIMU,
+   * SETIMUORIENTATION, INTERFACEMODE, ...) without a Windows tool.  The command is
+   * passed through as typed, apart from the checks below, because the driver can't
+   * know every command a receiver supports.
+   * See https://github.com/swri-robotics/novatel_gps_driver/issues/12.
+   *
+   * @param command One command, without a line ending; surrounding whitespace is
+   * trimmed.
+   * @param[out] warning Why the command was rejected, or a caution about a command
+   * that is sent anyway; empty if there is nothing to report.
+   * @return The command with the trailing "\r\n" the receiver expects, or an empty
+   * string if it is empty, holds a line ending (which would run more than one command
+   * from a single entry), holds an unprintable character, or is longer than
+   * MAX_CONFIGURE_COMMAND_LENGTH.
+   */
+  std::string BuildConfigureCommand(const std::string& command, std::string& warning);
+
+  /**
+   * @brief Checks a rate or period parameter before the driver divides by it.
+   *
+   * A polling_period of 0 makes the expected_rate that defaults from it infinite,
+   * and a non-positive expected_rate makes every rate diagnostic report an error,
+   * so fall back to the default rather than use a value that can't be right.
+   * See https://github.com/swri-robotics/novatel_gps_driver/issues/44.
+   *
+   * @param name The parameter's name, for the warning message.
+   * @param value The value the parameter was given.
+   * @param fallback The value to use in its place if it isn't usable.
+   * @param[out] warning Why the value was replaced, or empty if it was kept.
+   * @return value if it is positive and finite, otherwise fallback.
+   */
+  double ValidatePositiveParameter(const std::string& name, double value, double fallback,
+                                   std::string& warning);
+
+  /// The secondary-antenna fault bits decoded from an RXSTATUS log's AUX2 status word.
+  struct DualAntennaStatus
+  {
+    bool not_powered;
+    bool open;
+    bool shorted;
+  };
+
+  /**
+   * @brief Decodes the secondary-antenna fault bits out of an RXSTATUS log's AUX2
+   * status word.
+   *
+   * Bit positions and polarity are per the OEM7 RXSTATUS reference (NovAtel's own
+   * novatel_oem7_driver spells these out explicitly as AUX2_STATUS_STRS): bit 28 is
+   * set when the antenna is NOT powered, not when it is -- the opposite of what its
+   * bit position might suggest. See
+   * https://github.com/swri-robotics/novatel_gps_driver/issues/79.
+   *
+   * @param aux2stat The RXSTATUS log's aux2stat word.
+   * @return The decoded not_powered/open/shorted flags.
+   */
+  DualAntennaStatus DecodeDualAntennaStatus(uint32_t aux2stat);
 
   class NovatelGps
   {
@@ -131,6 +314,55 @@ namespace novatel_gps_driver
       bool Connect(const std::string& device, ConnectionType connection, NovatelMessageOpts const& opts);
 
       /**
+       * @brief Opens a second, write-only connection for RTCM corrections.
+       *
+       * Independent of the connection the driver reads logs over: Disconnect() leaves
+       * it open, so reconnecting to the receiver doesn't interrupt corrections.
+       *
+       * A receiver port that takes corrections is set to INTERFACEMODE ... RTCMV3,
+       * which stops it accepting NovAtel commands, so corrections normally go to a
+       * different port than the one the driver requests logs on.  Nothing is read
+       * from this connection and no configuration is sent to it.
+       * See https://github.com/swri-robotics/novatel_gps_driver/issues/97.
+       *
+       * @param device A serial device (e.g. "/dev/ttyUSB1") or, for TCP and UDP, a
+       * "host:port" the receiver is listening on.
+       * @param connection SERIAL, TCP or UDP.
+       * @param serial_baud The baud rate to use for a serial correction port.
+       * @return true if the port was opened.
+       */
+      bool ConnectCorrectionPort(const std::string& device, ConnectionType connection,
+                                 int32_t serial_baud);
+
+      /**
+       * @brief Sends corrections over the connection the driver already has, for a
+       * receiver with only one usable port.  That port has to accept both NovAtel
+       * commands and corrections, which means INTERFACEMODE ... AUTO.
+       */
+      void UseConnectionForCorrections();
+
+      /**
+       * @brief Whether corrections can currently be written.
+       */
+      bool IsCorrectionPortConnected() const;
+
+      /**
+       * @brief Writes correction data to the correction port.
+       *
+       * Callable from any thread.  On a write error the port is closed, so
+       * corrections stop until the driver reconnects.
+       *
+       * @param data The bytes of one correction message.
+       * @return true if all of the data was written.
+       */
+      bool WriteCorrections(const std::vector<uint8_t>& data);
+
+      /**
+       * @brief Closes the correction port, if one is open.
+       */
+      void DisconnectCorrectionPort();
+
+      /**
        * Disconnects from a connected device
        */
       void Disconnect();
@@ -146,6 +378,15 @@ namespace novatel_gps_driver
        * @param[out] fix_messages New GPSFix messages.
        */
       void GetFixMessages(std::vector<gps_msgs::msg::GPSFix::UniquePtr>& fix_messages);
+      /**
+       * @brief Provides every NMEA sentence that has been received since the last
+       * time this was called, as it arrived from the receiver.
+       *
+       * Every valid sentence is provided, including the types the driver has no
+       * parser for; see https://github.com/swri-robotics/novatel_gps_driver/issues/92.
+       * @param[out] nmea_sentences New NMEA sentences.
+       */
+      void GetNmeaSentences(std::vector<nmea_msgs::msg::Sentence::UniquePtr>& nmea_sentences);
       /**
        * @brief Provides any GPGGA messages that have been received since the
        * last time this was called.
@@ -296,6 +537,25 @@ namespace novatel_gps_driver
        * @param[out] rxstatus_msgs New RXSTATUS messages.
        */
       void GetRxStatusMessages(std::vector<novatel_gps_driver::RxStatusParser::MessageType>& rxstatus_msgs);
+      /**
+       * @brief Provides any RAWDMI messages that have been received since the
+       * last time this was called.
+       * @param[out] rawdmi_msgs New RAWDMI messages.
+       */
+      void GetRawDmiMessages(std::vector<novatel_gps_driver::RawDmiParser::MessageType>& rawdmi_msgs);
+      /**
+       * @brief Provides any INSUPDATESTATUS messages that have been received since
+       * the last time this was called.
+       * @param[out] insupdatestatus_msgs New INSUPDATESTATUS messages.
+       */
+      void GetInsUpdateStatusMessages(
+          std::vector<novatel_gps_driver::InsUpdateStatusParser::MessageType>& insupdatestatus_msgs);
+      /**
+       * @brief Provides any RAWIMUX and RAWIMUSX messages that have been received
+       * since the last time this was called.
+       * @param[out] rawimux_msgs New RAWIMUX and RAWIMUSX messages.
+       */
+      void GetRawImuxMessages(std::vector<novatel_gps_driver::RawImuxParser::MessageType>& rawimux_msgs);
 
       /**
        * @return true if we are connected to a NovAtel device, false otherwise.
@@ -310,11 +570,75 @@ namespace novatel_gps_driver
       static ConnectionType ParseConnection(const std::string& connection);
 
       /**
-       * @brief Determines whether or not to apply a 90 degree counter-clockwise rotation about Z
-       * to the Novatel SPAN frame to match up with the ROS coordinate frame.
-       * @param apply_rotation A bool indicating whether or not to apply the rotation.
+       * @brief Deprecated; the rotation is always applied and this does nothing but warn.
+       *
+       * The driver converts IMU data from the SPAN frame to the ROS frame itself, so it no
+       * longer asks the receiver to do it.  APPLYVEHICLEBODYROTATION was never sufficient on
+       * its own: it rotates only the INSPVA, INSPVAS, INSPVAX, INSATT, INSATTS and INSATTX
+       * logs, leaving the CORRIMUDATA rates and accelerations in the SPAN frame.
+       * @param apply_rotation Logs a deprecation warning when true.
        */
       void ApplyVehicleBodyRotation(const bool& apply_rotation);
+
+      /**
+       * @brief Sets the ANT1 antenna-to-IMU lever arm Configure() sends via
+       * SETINSTRANSLATION on connect. Call before Connect().
+       * @param offset The [x, y, z] offset in meters; empty to stop sending this
+       * command, any size other than 0 or 3 is rejected with a warning and treated
+       * as empty.
+       * @param offset_stdev The [x, y, z] standard deviation of offset, in meters;
+       * may be left empty even when offset is set.
+       */
+      void SetInsTranslationAnt1(const std::vector<double>& offset,
+                                 const std::vector<double>& offset_stdev = {});
+
+      /**
+       * @brief Sets the ANT2 antenna-to-IMU lever arm Configure() sends via
+       * SETINSTRANSLATION on connect. Call before Connect().
+       * @param offset The [x, y, z] offset in meters; empty to stop sending this
+       * command, any size other than 0 or 3 is rejected with a warning and treated
+       * as empty.
+       * @param offset_stdev The [x, y, z] standard deviation of offset, in meters;
+       * may be left empty even when offset is set.
+       */
+      void SetInsTranslationAnt2(const std::vector<double>& offset,
+                                 const std::vector<double>& offset_stdev = {});
+
+      /**
+       * @brief Sets the IMU-to-vehicle-frame rotation Configure() sends via
+       * "SETINSROTATION RBV" on connect. Call before Connect().
+       * @param rotation The [x, y, z] Euler angle rotation, in degrees; empty to stop
+       * sending this command, any size other than 0 or 3 is rejected with a warning
+       * and treated as empty.
+       * @param rotation_stdev The [x, y, z] standard deviation of rotation, in
+       * degrees; may be left empty even when rotation is set.
+       */
+      void SetInsRotationRbv(const std::vector<double>& rotation,
+                             const std::vector<double>& rotation_stdev = {});
+
+      /**
+       * @brief Sets the wheel sensor source Configure() sends via DMICONFIG on
+       * connect. Call before Connect().
+       * @param source A source accepted by BuildDmiConfigCommand(); empty to stop
+       * sending this command. Any other value is rejected with an error and
+       * treated as empty.
+       * @return true if source was accepted (including empty), false otherwise.
+       */
+      bool SetDmiSource(const std::string& source);
+
+      /**
+       * @brief Sets the configuration commands Configure() sends on connect, after
+       * the driver's own configuration commands and before it requests any logs.
+       * Call before Connect().
+       *
+       * They are re-sent every time the driver reconnects, so a receiver that was
+       * power cycled comes back configured.  Commands that can't be sent safely are
+       * dropped with a warning; see BuildConfigureCommand().
+       * See https://github.com/swri-robotics/novatel_gps_driver/issues/12.
+       *
+       * @param commands One receiver command per entry, without line endings.
+       */
+      void SetConfigureCommands(const std::vector<std::string>& commands);
 
       /**
        * @brief Processes any data that has been received from the device since the last time
@@ -325,11 +649,24 @@ namespace novatel_gps_driver
       ReadResult ProcessData();
 
       /**
-       * @brief Sets the IMU rate; necessary for producing sensor_msgs/Imu messages.
-       * @param imu_rate The IMU rate in Hz.
+       * @brief Sets the IMU's sample rate, used to check that CORRIMUDATA is logged
+       * at a rate the IMU can fill.
+       * @param imu_rate The IMU sample rate in Hz.
        * @param force If this value should be used instead of an autodetected one
        */
       void SetImuRate(double imu_rate, bool force = true);
+
+      /**
+       * @brief Asks the receiver for its IMU type, to learn the IMU's sample rate,
+       * on connect and then once a second until an IMU type arrives.
+       *
+       * RAWIMUX reports the IMU type, but it's only valid onnew, at the IMU's full
+       * rate, or once.  A single request isn't enough: its reply can be lost, or
+       * can come before the receiver has identified its IMU at cold boot (see
+       * https://github.com/swri-robotics/novatel_gps_driver/issues/98), so it's
+       * requested once at a time until one arrives.
+       */
+      void RequestImuType();
 
       /**
        * @brief Sets the serial baud rate; should be called before configuring a serial connection.
@@ -339,12 +676,17 @@ namespace novatel_gps_driver
 
       /**
        * @brief Writes the given string of characters to a connected NovAtel device.
+       *
+       * Callable from any thread: the driver's own thread writes log requests while
+       * ROS callbacks (the freset service) write from the executor thread, so this
+       * serializes them rather than letting two writes interleave on the connection.
        * @param command A string to transmit.
        * @return true if we successfully wrote all of the data, false otherwise.
        */
       bool Write(const std::string& command);
 
       double gpsfix_sync_tol_; //seconds
+      double gpsfix_sync_timeout_; // seconds of GPS time to wait for a bestvel before publishing without it
       bool wait_for_sync_; // wait until a bestvel has arrived before publishing bestpos
 
     private:
@@ -377,6 +719,14 @@ namespace novatel_gps_driver
        * @return false if it failed to create a connection, true otherwise.
        */
       bool CreateIpConnection(const std::string& endpoint, NovatelMessageOpts const& opts);
+
+      /**
+       * @brief Connects the correction port to a receiver listening on an IP endpoint.
+       * @param endpoint A "host:port" specification; both parts are required.
+       * @param connection TCP or UDP.
+       * @return false if it failed to create a connection, true otherwise.
+       */
+      bool CreateCorrectionIpConnection(const std::string& endpoint, ConnectionType connection);
 
       /**
        * @brief Establishes a serial port connection with a NovAtel device.
@@ -416,6 +766,39 @@ namespace novatel_gps_driver
        * generate Imu messages from them.
        */
       void GenerateImuMessages();
+
+      /// A CORRIMUDATA or CORRIMUS log, and how many seconds of IMU data it holds.
+      struct CorrImuIncrement
+      {
+        novatel_gps_driver::CorrImuDataParser::MessageType data;
+        double interval;
+      };
+
+      /**
+       * @brief Works out how much time a CORRIMUDATA or CORRIMUS log's increments
+       * cover and, if that's known, queues it for GenerateImuMessages().
+       *
+       * The increments cover the time since the last log that held IMU data. Logs
+       * that are all zeros hold no IMU samples and aren't queued. A log is also not
+       * queued if the time it covers is unknown: the first one, one after a log was
+       * lost, or one whose time went backwards.
+       */
+      void QueueCorrImuIncrement(std::queue<CorrImuIncrement>& queue,
+                                 const novatel_gps_driver::CorrImuDataParser::MessageType& imu,
+                                 const std::string& log_name);
+
+      /// Logs a warning if CheckImuLogRate() finds a problem with the IMU rates.
+      void WarnIfImuLogRateMismatched();
+
+      /**
+       * @brief Updates the IMU sample rate from the IMU type in a RAWIMUX or RAWIMUSX
+       * log, unless it's been set explicitly.  Only logs anything when the type changes,
+       * since these logs can arrive hundreds of times a second.
+       */
+      void UpdateImuType(uint8_t imu_type);
+
+      /// Sends RequestImuType()'s request if one is due.
+      void RequestImuTypeIfDue();
 
       /**
        * @brief Converts a BinaryMessage object into a ROS message of the appropriate type
@@ -528,11 +911,15 @@ namespace novatel_gps_driver
       TimeParser time_parser_;
       TrackstatParser trackstat_parser_;
       RxStatusParser rxstatus_parser_;
+      RawDmiParser rawdmi_parser_;
+      InsUpdateStatusParser insupdatestatus_parser_;
+      RawImuxParser rawimux_parser_;
 
       // Message buffers
       boost::circular_buffer<novatel_gps_driver::ClockSteeringParser::MessageType> clocksteering_msgs_;
       boost::circular_buffer<novatel_gps_driver::CorrImuDataParser::MessageType> corrimudata_msgs_;
       boost::circular_buffer<novatel_gps_driver::CorrImusParser::MessageType> corrimus_msgs_;
+      boost::circular_buffer<nmea_msgs::msg::Sentence::UniquePtr> nmea_sentences_;
       boost::circular_buffer<novatel_gps_driver::GpggaParser::MessageType> gpgga_msgs_;
       boost::circular_buffer<novatel_gps_driver::GpgsaParser::MessageType> gpgsa_msgs_;
       boost::circular_buffer<novatel_gps_driver::GpgsvParser::MessageType> gpgsv_msgs_;
@@ -557,20 +944,72 @@ namespace novatel_gps_driver
       boost::circular_buffer<novatel_gps_driver::TimeParser::MessageType> time_msgs_;
       boost::circular_buffer<novatel_gps_driver::TrackstatParser::MessageType> trackstat_msgs_;
       boost::circular_buffer<novatel_gps_driver::RxStatusParser::MessageType> rxstatus_msgs_;
+      boost::circular_buffer<novatel_gps_driver::RawDmiParser::MessageType> rawdmi_msgs_;
+      boost::circular_buffer<novatel_gps_driver::InsUpdateStatusParser::MessageType> insupdatestatus_msgs_;
+      boost::circular_buffer<novatel_gps_driver::RawImuxParser::MessageType> rawimux_msgs_;
 
       novatel_gps_driver::Psrdop2Parser::MessageType latest_psrdop2_;
 
       // IMU data synchronization queues
-      std::queue<novatel_gps_driver::CorrImuDataParser::MessageType> corrimudata_queue_;
-      std::queue<novatel_gps_driver::CorrImusParser::MessageType> corrimus_queue_;
+      std::queue<CorrImuIncrement> corrimudata_queue_;
+      std::queue<CorrImuIncrement> corrimus_queue_;
       std::queue<novatel_gps_driver::InspvaParser::MessageType> inspva_queue_;
       std::queue<novatel_gps_driver::InspvasParser::MessageType> inspvas_queue_;
       novatel_gps_driver::InsstdevParser::MessageType latest_insstdev_;
       novatel_gps_driver::InscovParser::MessageType latest_inscov_;
+      // The IMU's sample rate, in Hz, or negative if unknown
       double imu_rate_;
+      // The period CORRIMUDATA is requested at, in seconds, or negative if unknown
+      double imu_log_period_;
+      // The last CORRIMUDATA or CORRIMUS log, and the last one that held IMU data,
+      // for working out how much time each log covers; null if there hasn't been one.
+      novatel_gps_driver::CorrImuDataParser::MessageType last_corrimu_;
+      novatel_gps_driver::CorrImuDataParser::MessageType last_nonempty_corrimu_;
+      // Seconds between the last two CORRIMUDATA or CORRIMUS logs, or negative if unknown
+      double last_corrimu_gap_;
+      // The last warning WarnIfImuLogRateMismatched() logged, so it isn't repeated
+      std::string last_imu_rate_warning_;
+      // The IMU type from the last RAWIMUX or RAWIMUSX, or -1 if there hasn't been one
+      int32_t last_imu_type_;
+      // Whether RequestImuType() has been called, and when its request was last sent
+      bool imu_type_requested_;
+      std::chrono::steady_clock::time_point last_imu_type_request_;
+      // Binary message IDs that have been warned about as unexpected, so each is only
+      // warned about once rather than every time it arrives
+      std::set<uint16_t> unexpected_binary_message_ids_;
 
-      // Additional Options
-      bool apply_vehicle_body_rotation_;
+      // Serializes Write() so writes from the driver's thread and from ROS callbacks
+      // can't interleave on the same connection.
+      std::mutex write_mutex_;
+
+      // Write-only connection for RTCM corrections, and the mutex that serializes
+      // opening, closing and writing it.  INVALID means "no correction port open";
+      // correction_shares_connection_ means corrections go over the main connection.
+      ConnectionType correction_connection_;
+      bool correction_shares_connection_;
+      swri_serial_util::SerialPort correction_serial_;
+      boost::asio::ip::tcp::socket correction_tcp_socket_;
+      std::shared_ptr<boost::asio::ip::udp::socket> correction_udp_socket_;
+      std::shared_ptr<boost::asio::ip::udp::endpoint> correction_udp_endpoint_;
+      std::mutex correction_mutex_;
+
+      // The most recent INSPVAX, kept so GetFixMessages() can prefer its azimuth
+      // (a true direction of travel) over BESTVEL's Doppler-derived track_ground
+      // for GPSFix::track, which degrades badly at low speed.
+      novatel_gps_driver::InspvaxParser::MessageType latest_inspvax_;
+
+      // SETINSTRANSLATION/SETINSROTATION commands Configure() sends on connect, built
+      // by SetInsTranslationAnt1/Ant2 and SetInsRotationRbv. Empty means "not
+      // configured, don't send."
+      std::string ins_translation_ant1_command_;
+      std::string ins_translation_ant2_command_;
+      std::string ins_rotation_rbv_command_;
+      // DMICONFIG command Configure() sends on connect, built by SetDmiSource.
+      // Empty means "not configured, don't send."
+      std::string dmi_config_command_;
+      // Arbitrary receiver commands Configure() sends on connect, built by
+      // SetConfigureCommands. Empty means "not configured, don't send."
+      std::vector<std::string> configure_commands_;
   };
 }
 
